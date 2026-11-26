@@ -16,6 +16,7 @@ export default defineConfig(() => {
         registerType: 'autoUpdate',
         includeAssets: [
           'assets/aistudio/WhatsApp_Image_2026-11-25_at_03.55.32_835749e8.jpeg',
+          'assets/aistudio/wandegeya_3c75f36b.jfif',
           'icon.svg',
           'apple-touch-icon.png',
           'pwa-192x192.png',
@@ -61,7 +62,7 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
-          globPatterns: ['**/*.{js,css,html,ico,png,svg,jpg,jpeg,woff,woff2}'],
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,jpg,jpeg,jfif,woff,woff2}'],
           navigateFallbackDenylist: [/^\/api\//],
           runtimeCaching: [
             {

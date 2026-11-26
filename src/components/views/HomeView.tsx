@@ -157,8 +157,8 @@ export const HomeView: React.FC = () => {
 
           <div className="lg:col-span-5 relative min-h-[220px] lg:min-h-full">
             <img
-              src="/src/assets/images/hero_islamic_library_1795281780342.jpg"
-              alt="Minaratul Huda Scholarly Library"
+              src="/assets/aistudio/wandegeya_3c75f36b.jfif"
+              alt="Minaratul Huda Mosque"
               referrerPolicy="no-referrer"
               className="h-full w-full object-cover"
             />
