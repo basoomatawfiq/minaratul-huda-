@@ -143,7 +143,9 @@ export const ContentDetailsModal: React.FC = () => {
               <span className="font-semibold text-slate-800 dark:text-slate-200">Audio Lecture: </span>
               {item.audio ? (
                 <span className="tabular-nums">
-                  {item.audio.format} · {formatDuration(item.audio.durationSeconds)} · {formatBytes(item.audio.sizeBytes)}
+                  {(item.audio.format || 'AUDIO').toUpperCase()}
+                  {item.audio.durationSeconds > 0 ? ` · ${formatDuration(item.audio.durationSeconds)}` : ''}
+                  {item.audio.sizeBytes > 0 ? ` · ${formatBytes(item.audio.sizeBytes)}` : ''}
                 </span>
               ) : (
                 <span>Not attached</span>

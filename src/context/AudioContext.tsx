@@ -1,6 +1,14 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { resolveApiUrl, resolveMediaUrl } from '../services/api';
-import { getOfflineMediaBlobUrl } from '../services/offlineManager';
+import {
+  decodeAudioToWavBlob,
+  extractAudioExtension,
+  getCachedDecodedAudio,
+  resolveAudioMimeType,
+  setCachedDecodedAudio,
+  shouldTranscodeDirectly,
+} from '../services/audioFormatResolver';
+import { getOfflineMediaBlob } from '../services/offlineManager';
 import type { ContentItem } from '../types/content';
 import { useApp } from './AppContext';
 
@@ -11,6 +19,7 @@ interface AudioContextValue {
   queue: ContentItem[];
   isPlaying: boolean;
   isBuffering: boolean;
+  loadingStatus: string | null;
   audioError: string | null;
   currentTime: number;
   duration: number;
@@ -38,11 +47,25 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const activeBlobUrlRef = useRef<string | null>(null);
   const lastSyncRef = useRef<number>(0);
+  const playRequestIdRef = useRef<number>(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const currentTrackRef = useRef<ContentItem | null>(null);
+  const activeMetaRef = useRef<{
+    reqId: number;
+    item: ContentItem;
+    mediaUrl: string;
+    ext: string;
+    mime: string;
+    offlineBlob: Blob | null;
+    fallbackTried: boolean;
+    initialPos: number;
+  } | null>(null);
 
   const [currentTrack, setCurrentTrack] = useState<ContentItem | null>(null);
   const [queue, setQueue] = useState<ContentItem[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isBuffering, setIsBuffering] = useState(false);
+  const [loadingStatus, setLoadingStatus] = useState<string | null>(null);
   const [audioError, setAudioError] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -59,44 +82,159 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   useEffect(() => {
+    currentTrackRef.current = currentTrack;
+  }, [currentTrack]);
+
+  useEffect(() => {
     const audio = new Audio();
     audio.preload = 'metadata';
     audioRef.current = audio;
 
     return () => {
+      abortControllerRef.current?.abort();
       audio.pause();
+      audio.removeAttribute('src');
       cleanupBlob();
     };
   }, []);
+
+  const attachMetadataAndResume = useCallback(
+    (audio: HTMLAudioElement, item: ContentItem, reqId: number, initialPos: number) => {
+      let resumed = false;
+      const applyMeta = () => {
+        if (playRequestIdRef.current !== reqId) return;
+        const finiteDur = audio.duration && Number.isFinite(audio.duration) ? audio.duration : 0;
+        if (finiteDur > 0) {
+          setDuration(finiteDur);
+          if (!resumed && initialPos > 0 && initialPos < finiteDur - 1) {
+            resumed = true;
+            audio.currentTime = initialPos;
+            setCurrentTime(initialPos);
+          }
+        } else if (item.audio?.durationSeconds) {
+          setDuration(item.audio.durationSeconds);
+        }
+      };
+
+      const onMeta = () => applyMeta();
+      const onDurChange = () => applyMeta();
+      audio.addEventListener('loadedmetadata', onMeta);
+      audio.addEventListener('durationchange', onDurChange);
+
+      return () => {
+        audio.removeEventListener('loadedmetadata', onMeta);
+        audio.removeEventListener('durationchange', onDurChange);
+      };
+    },
+    []
+  );
+
+  const metaCleanupRef = useRef<(() => void) | null>(null);
+
+  const transcodeAndAssignSrc = useCallback(
+    async (
+      audio: HTMLAudioElement,
+      mediaUrl: string,
+      ext: string,
+      mime: string,
+      offlineBlob: Blob | null,
+      reqId: number,
+      signal: AbortSignal
+    ) => {
+      const cached = getCachedDecodedAudio(mediaUrl);
+      if (cached) {
+        if (playRequestIdRef.current !== reqId || signal.aborted) return false;
+        cleanupBlob();
+        const wavUrl = URL.createObjectURL(cached.wavBlob);
+        activeBlobUrlRef.current = wavUrl;
+        audio.src = wavUrl;
+        if (cached.durationSeconds > 0) setDuration(cached.durationSeconds);
+        return true;
+      }
+
+      const formatLabel = (ext || 'audio').toUpperCase();
+      setLoadingStatus(`Decoding ${formatLabel} audio...`);
+
+      let bytes: Uint8Array;
+      if (offlineBlob) {
+        bytes = new Uint8Array(await offlineBlob.arrayBuffer());
+      } else {
+        if (!isOnline) {
+          throw new Error('This audio is not downloaded and you are currently offline.');
+        }
+        const response = await fetch(mediaUrl, { signal });
+        if (!response.ok) {
+          throw new Error(`Unable to fetch audio (${response.status}).`);
+        }
+        bytes = new Uint8Array(await response.arrayBuffer());
+      }
+
+      if (playRequestIdRef.current !== reqId || signal.aborted) return false;
+
+      const decoded = await decodeAudioToWavBlob(bytes, ext, mime);
+      if (playRequestIdRef.current !== reqId || signal.aborted) return false;
+
+      setCachedDecodedAudio(mediaUrl, {
+        wavBlob: decoded.wavBlob,
+        durationSeconds: decoded.durationSeconds,
+      });
+
+      cleanupBlob();
+      const wavUrl = URL.createObjectURL(decoded.wavBlob);
+      activeBlobUrlRef.current = wavUrl;
+      audio.src = wavUrl;
+      if (decoded.durationSeconds > 0) {
+        setDuration(decoded.durationSeconds);
+      }
+      return true;
+    },
+    [isOnline]
+  );
 
   const loadAndPlay = useCallback(
     async (item: ContentItem, resumeAt?: number) => {
       if (!item.audio?.url || !audioRef.current) return;
       const audio = audioRef.current;
 
+      const reqId = ++playRequestIdRef.current;
+      abortControllerRef.current?.abort();
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+
+      metaCleanupRef.current?.();
+      metaCleanupRef.current = null;
+
+      audio.pause();
       setAudioError(null);
+      setLoadingStatus(null);
       setIsBuffering(true);
+      setIsPlaying(false);
       setCurrentTrack(item);
+      setCurrentTime(0);
+      setDuration(item.audio.durationSeconds || 0);
 
       cleanupBlob();
-      const offlineUrl = await getOfflineMediaBlobUrl(item.audio.url);
-      if (offlineUrl) {
-        activeBlobUrlRef.current = offlineUrl;
-        audio.src = offlineUrl;
-        setIsPlayingOffline(true);
-      } else {
-        if (!isOnline) {
-          setIsBuffering(false);
-          setIsPlaying(false);
-          setIsPlayingOffline(false);
-          setAudioError('This audio is not downloaded and you are currently offline.');
-          return;
-        }
-        audio.src = resolveMediaUrl(item.audio.url);
+
+      const offlineBlob = await getOfflineMediaBlob(item.audio.url, item.audio.format);
+      if (playRequestIdRef.current !== reqId || controller.signal.aborted) return;
+
+      if (!offlineBlob && !isOnline) {
+        setIsBuffering(false);
+        setIsPlaying(false);
         setIsPlayingOffline(false);
+        setAudioError('This audio is not downloaded and you are currently offline.');
+        return;
       }
 
-      audio.playbackRate = playbackRate;
+      const mediaUrl = resolveMediaUrl(item.audio.url);
+      const ext = extractAudioExtension(item.audio.url, item.audio.format);
+      const mime = resolveAudioMimeType({
+        url: item.audio.url,
+        formatHint: item.audio.format,
+        serverContentType: offlineBlob?.type,
+      });
+
+      setIsPlayingOffline(Boolean(offlineBlob));
 
       // Determine resume position
       let initialPos = resumeAt ?? 0;
@@ -110,17 +248,47 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         }
       }
 
-      const handleLoaded = () => {
-        if (initialPos > 0 && initialPos < audio.duration) {
-          audio.currentTime = initialPos;
-        }
-        setDuration(audio.duration || item.audio?.durationSeconds || 0);
+      activeMetaRef.current = {
+        reqId,
+        item,
+        mediaUrl,
+        ext,
+        mime,
+        offlineBlob,
+        fallbackTried: false,
+        initialPos,
       };
 
-      audio.addEventListener('loadedmetadata', handleLoaded, { once: true });
+      metaCleanupRef.current = attachMetadataAndResume(audio, item, reqId, initialPos);
 
       try {
+        const directTranscode = shouldTranscodeDirectly(audio, ext, mime) || Boolean(getCachedDecodedAudio(mediaUrl));
+
+        if (directTranscode) {
+          activeMetaRef.current.fallbackTried = true;
+          const ready = await transcodeAndAssignSrc(
+            audio,
+            mediaUrl,
+            ext,
+            mime,
+            offlineBlob,
+            reqId,
+            controller.signal
+          );
+          if (!ready || playRequestIdRef.current !== reqId) return;
+        } else if (offlineBlob) {
+          const blobUrl = URL.createObjectURL(offlineBlob);
+          activeBlobUrlRef.current = blobUrl;
+          audio.src = blobUrl;
+        } else {
+          audio.src = mediaUrl;
+        }
+
+        audio.playbackRate = playbackRate;
+        setLoadingStatus(null);
         await audio.play();
+
+        if (playRequestIdRef.current !== reqId) return;
         setIsPlaying(true);
         setIsBuffering(false);
 
@@ -131,13 +299,51 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             body: JSON.stringify({ action: 'play' }),
           }).catch(() => {});
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
+        if (playRequestIdRef.current !== reqId || controller.signal.aborted) return;
+
+        // If direct native playback failed (e.g. 3GP with AMR track or unsupported browser container), auto-fallback to WASM/WebAudio decoder
+        const meta = activeMetaRef.current;
+        if (meta && meta.reqId === reqId && !meta.fallbackTried) {
+          meta.fallbackTried = true;
+          try {
+            const ready = await transcodeAndAssignSrc(
+              audio,
+              mediaUrl,
+              ext,
+              mime,
+              offlineBlob,
+              reqId,
+              controller.signal
+            );
+            if (!ready || playRequestIdRef.current !== reqId) return;
+            audio.playbackRate = playbackRate;
+            setLoadingStatus(null);
+            await audio.play();
+            if (playRequestIdRef.current !== reqId) return;
+            setIsPlaying(true);
+            setIsBuffering(false);
+            return;
+          } catch (fallbackErr: unknown) {
+            if (playRequestIdRef.current !== reqId || controller.signal.aborted) return;
+            setLoadingStatus(null);
+            setIsBuffering(false);
+            setIsPlaying(false);
+            const message =
+              fallbackErr instanceof Error ? fallbackErr.message : 'Unable to decode or play audio format.';
+            setAudioError(message);
+            return;
+          }
+        }
+
+        setLoadingStatus(null);
         setIsBuffering(false);
         setIsPlaying(false);
-        setAudioError(err?.message || 'Unable to play audio stream.');
+        const message = err instanceof Error ? err.message : 'Unable to play audio stream.';
+        setAudioError(message);
       }
     },
-    [playbackRate, listeningHistory, isOnline]
+    [playbackRate, listeningHistory, isOnline, attachMetadataAndResume, transcodeAndAssignSrc]
   );
 
   const playItem = useCallback(
@@ -147,7 +353,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         return;
       }
 
-      if (currentTrack?.id === item.id && audioRef.current && startAtSeconds === undefined) {
+      if (currentTrack?.id === item.id && audioRef.current && startAtSeconds === undefined && !audioError) {
         if (audioRef.current.paused) {
           await audioRef.current.play().catch(() => {});
           setIsPlaying(true);
@@ -166,28 +372,37 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
       await loadAndPlay(item, startAtSeconds);
     },
-    [currentTrack, queue, loadAndPlay, showToast]
+    [currentTrack, queue, audioError, loadAndPlay, showToast]
   );
 
   const togglePlayPause = useCallback(() => {
     const audio = audioRef.current;
     if (!audio || !currentTrack) return;
+    if (audioError) {
+      loadAndPlay(currentTrack);
+      return;
+    }
     if (audio.paused) {
       audio.play().then(() => setIsPlaying(true)).catch(() => {});
     } else {
       audio.pause();
       setIsPlaying(false);
-      recordListeningProgress(currentTrack, audio.currentTime, audio.duration || currentTrack.audio?.durationSeconds || 0);
+      recordListeningProgress(
+        currentTrack,
+        audio.currentTime,
+        (Number.isFinite(audio.duration) ? audio.duration : 0) || currentTrack.audio?.durationSeconds || 0
+      );
     }
-  }, [currentTrack, recordListeningProgress]);
+  }, [currentTrack, audioError, loadAndPlay, recordListeningProgress]);
 
   const seek = useCallback((seconds: number) => {
     const audio = audioRef.current;
     if (!audio) return;
-    const clamped = Math.max(0, Math.min(seconds, audio.duration || seconds));
+    const maxDur = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : duration || seconds;
+    const clamped = Math.max(0, Math.min(seconds, maxDur));
     audio.currentTime = clamped;
     setCurrentTime(clamped);
-  }, []);
+  }, [duration]);
 
   const skipBy = useCallback(
     (deltaSeconds: number) => {
@@ -246,10 +461,20 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   );
 
   const closePlayer = useCallback(() => {
+    playRequestIdRef.current += 1;
+    abortControllerRef.current?.abort();
+    metaCleanupRef.current?.();
+    metaCleanupRef.current = null;
+    activeMetaRef.current = null;
     if (audioRef.current) {
       audioRef.current.pause();
+      audioRef.current.removeAttribute('src');
+      audioRef.current.load();
     }
     setIsPlaying(false);
+    setIsBuffering(false);
+    setLoadingStatus(null);
+    setAudioError(null);
     setIsExpanded(false);
     setCurrentTrack(null);
     cleanupBlob();
@@ -262,27 +487,75 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     const onTimeUpdate = () => {
       setCurrentTime(audio.currentTime);
-      if (audio.duration && !isNaN(audio.duration)) setDuration(audio.duration);
+      const validDur = audio.duration && Number.isFinite(audio.duration) ? audio.duration : 0;
+      if (validDur > 0) setDuration(validDur);
       const now = Date.now();
       if (currentTrack && now - lastSyncRef.current > 3500) {
         lastSyncRef.current = now;
-        recordListeningProgress(currentTrack, audio.currentTime, audio.duration || currentTrack.audio?.durationSeconds || 0);
+        recordListeningProgress(currentTrack, audio.currentTime, validDur || currentTrack.audio?.durationSeconds || 0);
       }
     };
     const onWaiting = () => setIsBuffering(true);
     const onPlaying = () => {
       setIsBuffering(false);
+      setLoadingStatus(null);
       setIsPlaying(true);
     };
     const onPause = () => setIsPlaying(false);
-    const onError = () => {
+    const onError = async () => {
+      if (!currentTrackRef.current) return;
+      const meta = activeMetaRef.current;
+      const signal = abortControllerRef.current?.signal;
+
+      // Attempt automatic universal decode fallback if native <audio> element fired a source/decode error
+      if (
+        meta &&
+        meta.reqId === playRequestIdRef.current &&
+        !meta.fallbackTried &&
+        signal &&
+        !signal.aborted
+      ) {
+        meta.fallbackTried = true;
+        try {
+          setIsBuffering(true);
+          const ready = await transcodeAndAssignSrc(
+            audio,
+            meta.mediaUrl,
+            meta.ext,
+            meta.mime,
+            meta.offlineBlob,
+            meta.reqId,
+            signal
+          );
+          if (!ready || playRequestIdRef.current !== meta.reqId) return;
+          audio.playbackRate = playbackRate;
+          setLoadingStatus(null);
+          await audio.play();
+          if (playRequestIdRef.current === meta.reqId) {
+            setIsPlaying(true);
+            setIsBuffering(false);
+            setAudioError(null);
+          }
+          return;
+        } catch (err: unknown) {
+          if (playRequestIdRef.current !== meta.reqId || signal.aborted) return;
+          setLoadingStatus(null);
+          setIsBuffering(false);
+          setIsPlaying(false);
+          setAudioError(err instanceof Error ? err.message : 'Unable to decode audio format.');
+          return;
+        }
+      }
+
+      setLoadingStatus(null);
       setIsBuffering(false);
       setIsPlaying(false);
       setAudioError('Playback interrupted. Check connection or download for offline playback.');
     };
     const onEnded = () => {
       if (currentTrack) {
-        recordListeningProgress(currentTrack, 0, audio.duration || currentTrack.audio?.durationSeconds || 0, true);
+        const validDur = audio.duration && Number.isFinite(audio.duration) ? audio.duration : 0;
+        recordListeningProgress(currentTrack, 0, validDur || currentTrack.audio?.durationSeconds || 0, true);
       }
       if (repeatMode === 'one') {
         audio.currentTime = 0;
@@ -307,7 +580,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       audio.removeEventListener('error', onError);
       audio.removeEventListener('ended', onEnded);
     };
-  }, [currentTrack, repeatMode, nextTrack, recordListeningProgress]);
+  }, [currentTrack, repeatMode, playbackRate, nextTrack, recordListeningProgress, transcodeAndAssignSrc]);
 
   // Wire lock-screen & headphone MediaSession API
   useEffect(() => {
@@ -336,6 +609,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         queue,
         isPlaying,
         isBuffering,
+        loadingStatus,
         audioError,
         currentTime,
         duration,

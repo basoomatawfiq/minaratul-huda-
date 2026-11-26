@@ -1,5 +1,6 @@
 import type { ContentItem } from '../types/content';
 import { resolveApiUrl, resolveMediaUrl } from './api';
+import { extractAudioExtension, resolveAudioMimeType } from './audioFormatResolver';
 
 const CACHE_NAME = 'albayan-offline-media-v1';
 const DB_NAME = 'albayan_offline_db';
@@ -100,7 +101,10 @@ export async function clearAllOfflineDownloads(): Promise<void> {
   }
 }
 
-export async function getOfflineMediaBlobUrl(url: string): Promise<string | null> {
+export async function getOfflineMediaBlob(
+  url: string,
+  formatHint?: string
+): Promise<Blob | null> {
   if (!('caches' in window)) return null;
   try {
     const cache = await caches.open(CACHE_NAME);
@@ -108,10 +112,27 @@ export async function getOfflineMediaBlobUrl(url: string): Promise<string | null
     const matched = (await cache.match(resolved)) || (await cache.match(url));
     if (!matched) return null;
     const blob = await matched.blob();
-    return URL.createObjectURL(blob);
+    const headerSlice = new Uint8Array(await blob.slice(0, 256).arrayBuffer());
+    const rawType = (blob.type || '').split(';')[0].trim().toLowerCase();
+    if (!rawType || rawType === 'application/octet-stream' || rawType === 'binary/octet-stream') {
+      const normalizedType = resolveAudioMimeType({
+        url,
+        formatHint,
+        serverContentType: matched.headers.get('content-type'),
+        magicBytes: headerSlice,
+      });
+      return new Blob([blob], { type: normalizedType });
+    }
+    return blob;
   } catch {
     return null;
   }
+}
+
+export async function getOfflineMediaBlobUrl(url: string): Promise<string | null> {
+  const blob = await getOfflineMediaBlob(url);
+  if (!blob) return null;
+  return URL.createObjectURL(blob);
 }
 
 export async function isUrlCachedOffline(url: string): Promise<boolean> {
@@ -153,10 +174,12 @@ export async function downloadMediaOffline(
   }
 
   const contentLength = Number(response.headers.get('content-length') || '0');
-  const contentType = response.headers.get('content-type') || (kind === 'audio' ? 'audio/mpeg' : 'application/pdf');
+  const serverContentType = response.headers.get('content-type');
   const reader = response.body?.getReader();
 
   let blob: Blob;
+  let resolvedContentType: string;
+
   if (reader) {
     const chunks: Uint8Array[] = [];
     let received = 0;
@@ -173,9 +196,32 @@ export async function downloadMediaOffline(
         }
       }
     }
-    blob = new Blob(chunks as BlobPart[], { type: contentType });
+    const headBytes = chunks[0]?.subarray(0, 256);
+    resolvedContentType =
+      kind === 'audio'
+        ? resolveAudioMimeType({
+            url: rawUrl,
+            formatHint: item.audio?.format,
+            serverContentType,
+            magicBytes: headBytes,
+          })
+        : serverContentType && serverContentType !== 'application/octet-stream'
+        ? serverContentType
+        : 'application/pdf';
+    blob = new Blob(chunks as BlobPart[], { type: resolvedContentType });
   } else {
-    blob = await response.blob();
+    const rawBlob = await response.blob();
+    const headBytes = new Uint8Array(await rawBlob.slice(0, 256).arrayBuffer());
+    resolvedContentType =
+      kind === 'audio'
+        ? resolveAudioMimeType({
+            url: rawUrl,
+            formatHint: item.audio?.format,
+            serverContentType: serverContentType || rawBlob.type,
+            magicBytes: headBytes,
+          })
+        : serverContentType || rawBlob.type || 'application/pdf';
+    blob = new Blob([rawBlob], { type: resolvedContentType });
   }
 
   if ('caches' in window) {
@@ -185,7 +231,7 @@ export async function downloadMediaOffline(
       new Response(blob, {
         status: 200,
         headers: {
-          'Content-Type': contentType,
+          'Content-Type': resolvedContentType,
           'Content-Length': String(blob.size),
         },
       })
@@ -193,6 +239,9 @@ export async function downloadMediaOffline(
   }
 
   onProgress(100);
+
+  const audioFormatLabel =
+    (item.audio?.format || extractAudioExtension(rawUrl) || 'AUDIO').toUpperCase();
 
   const record: OfflineDownloadRecord = {
     key,
@@ -203,7 +252,7 @@ export async function downloadMediaOffline(
     speaker: item.speaker,
     categorySlug: item.categorySlug,
     categoryName: item.categoryName,
-    format: kind === 'audio' ? item.audio?.format || 'AUDIO' : item.document?.format || 'PDF',
+    format: kind === 'audio' ? audioFormatLabel : item.document?.format || 'PDF',
     sizeBytes: blob.size || (kind === 'audio' ? item.audio?.sizeBytes || 0 : item.document?.sizeBytes || 0),
     downloadedAt: new Date().toISOString(),
     itemSnapshot: item,

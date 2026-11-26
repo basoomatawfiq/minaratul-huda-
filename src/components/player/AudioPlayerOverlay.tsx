@@ -29,6 +29,7 @@ export const AudioPlayerOverlay: React.FC = () => {
     queue,
     isPlaying,
     isBuffering,
+    loadingStatus,
     audioError,
     currentTime,
     duration,
@@ -87,8 +88,16 @@ export const AudioPlayerOverlay: React.FC = () => {
                   {title}
                 </p>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate tabular-nums">
-                  {currentTrack.speaker} · {formatDuration(currentTime)} / {formatDuration(duration)}
-                  {isPlayingOffline ? ' · Offline' : ''}
+                  {loadingStatus ? (
+                    loadingStatus
+                  ) : audioError ? (
+                    <span className="text-amber-700 dark:text-amber-400">{audioError}</span>
+                  ) : (
+                    <>
+                      {currentTrack.speaker} · {formatDuration(currentTime)} / {formatDuration(duration)}
+                      {isPlayingOffline ? ' · Offline' : ''}
+                    </>
+                  )}
                 </p>
               </div>
             </button>
@@ -183,6 +192,12 @@ export const AudioPlayerOverlay: React.FC = () => {
                 {currentTrack.seriesTitle ? ` · ${currentTrack.seriesTitle}` : ''}
               </p>
 
+              {loadingStatus && !audioError && (
+                <p className="mt-2 text-xs font-medium text-emerald-700 dark:text-emerald-400">
+                  {loadingStatus}
+                </p>
+              )}
+
               {audioError && (
                 <div className="mt-3 inline-flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-200">
                   <WifiOff className="w-4 h-4 shrink-0" />
@@ -200,9 +215,10 @@ export const AudioPlayerOverlay: React.FC = () => {
                   max={duration || 100}
                   step={0.5}
                   value={currentTime}
+                  disabled={duration <= 0}
                   onChange={(e) => seek(Number(e.target.value))}
                   aria-label="Audio seek slider"
-                  className="w-full accent-[#0F4C3A] dark:accent-emerald-500 cursor-pointer"
+                  className="w-full accent-[#0F4C3A] dark:accent-emerald-500 cursor-pointer disabled:opacity-50"
                 />
                 <div className="mt-1 flex justify-between text-xs text-slate-500 dark:text-slate-400 tabular-nums">
                   <span>{formatDuration(currentTime)}</span>
