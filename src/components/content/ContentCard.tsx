@@ -1,5 +1,4 @@
-import React, { useState } from 'react';
-import { BookOpen } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import {
   getLocalizedCategoryName,
@@ -7,7 +6,7 @@ import {
   getLocalizedTitle,
   t,
 } from '../../i18n/translations';
-import { resolveMediaUrl } from '../../services/api';
+import { APP_LOGO_PATH, resolveMediaUrl } from '../../services/api';
 import { formatDuration } from '../../services/offlineManager';
 import type { ContentItem } from '../../types/content';
 import {
@@ -28,6 +27,10 @@ interface ContentCardProps {
 export const ContentCard: React.FC<ContentCardProps> = ({ item, queue, compact }) => {
   const { language, openContentDetails, isItemDownloaded, isOnline } = useApp();
   const [imgError, setImgError] = useState(false);
+
+  useEffect(() => {
+    setImgError(false);
+  }, [item.id, item.coverImage]);
 
   const actions = getContentActions(item);
   const title = getLocalizedTitle(item, language);
@@ -56,9 +59,11 @@ export const ContentCard: React.FC<ContentCardProps> = ({ item, queue, compact }
                 className="h-full w-full object-cover"
               />
             ) : (
-              <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-emerald-900 to-emerald-700 text-amber-200">
-                <BookOpen className="h-7 w-7" />
-              </div>
+              <img
+                src={APP_LOGO_PATH}
+                alt="Minaratul Huda"
+                className="h-full w-full object-cover"
+              />
             )}
           </div>
 

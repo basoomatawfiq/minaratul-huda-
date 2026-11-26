@@ -17,7 +17,6 @@ export default defineConfig(() => {
         includeAssets: [
           'assets/aistudio/WhatsApp_Image_2026-11-25_at_03.55.32_835749e8.jpeg',
           'assets/aistudio/wandegeya_3c75f36b.jfif',
-          'icon.svg',
           'apple-touch-icon.png',
           'pwa-192x192.png',
           'pwa-512x512.png',
@@ -35,12 +34,6 @@ export default defineConfig(() => {
           start_url: '/',
           scope: '/',
           icons: [
-            {
-              src: '/assets/aistudio/WhatsApp_Image_2026-11-25_at_03.55.32_835749e8.jpeg',
-              sizes: 'any',
-              type: 'image/jpeg',
-              purpose: 'any',
-            },
             {
               src: '/pwa-192x192.png',
               sizes: '192x192',
@@ -62,6 +55,9 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
+          cleanupOutdatedCaches: true,
+          clientsClaim: true,
+          skipWaiting: true,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,jpg,jpeg,jfif,woff,woff2}'],
           navigateFallbackDenylist: [/^\/api\//],
           runtimeCaching: [

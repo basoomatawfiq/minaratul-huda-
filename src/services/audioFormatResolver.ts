@@ -466,6 +466,15 @@ async function decodeWithWebAudioApi(bytes: Uint8Array): Promise<AudioData> {
   }
 }
 
+let cachedDecoderModulePromise: Promise<typeof import('@audio/decode')> | null = null;
+
+export function preloadAudioDecoder(): Promise<typeof import('@audio/decode')> {
+  if (!cachedDecoderModulePromise) {
+    cachedDecoderModulePromise = import('@audio/decode');
+  }
+  return cachedDecoderModulePromise;
+}
+
 export async function decodeAudioToWavBlob(
   bytes: Uint8Array,
   extHint?: string,
@@ -475,7 +484,7 @@ export async function decodeAudioToWavBlob(
   const ext = normalizeExtToken(extHint);
   const resolvedExt = sniffed || ext || normalizeExtToken(mimeHint?.split('/')[1]?.split(';')[0]);
 
-  const { default: decode } = await import('@audio/decode');
+  const { default: decode } = await preloadAudioDecoder();
   let audioData: AudioData | null = null;
   let lastError: unknown = null;
 

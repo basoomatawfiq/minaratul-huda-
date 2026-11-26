@@ -4,6 +4,7 @@ import {
   decodeAudioToWavBlob,
   extractAudioExtension,
   getCachedDecodedAudio,
+  preloadAudioDecoder,
   resolveAudioMimeType,
   setCachedDecodedAudio,
   shouldTranscodeDirectly,
@@ -13,6 +14,10 @@ import type { ContentItem } from '../types/content';
 import { useApp } from './AppContext';
 
 export type RepeatMode = 'off' | 'all' | 'one';
+
+// 1-sample silent PCM WAV to unlock HTMLAudioElement synchronously inside the user's tap gesture
+const SILENT_UNLOCK_WAV_URI =
+  'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
 
 interface AudioContextValue {
   currentTrack: ContentItem | null;
@@ -42,14 +47,61 @@ interface AudioContextValue {
 
 const AudioContext = createContext<AudioContextValue | null>(null);
 
+async function fetchAudioBytesWithProgress(
+  mediaUrl: string,
+  signal: AbortSignal,
+  onProgress: (pct: number) => void
+): Promise<Uint8Array> {
+  const response = await fetch(mediaUrl, { signal });
+  if (!response.ok) {
+    throw new Error(`Unable to fetch audio (${response.status}).`);
+  }
+
+  const contentLengthHeader = response.headers.get('content-length');
+  const totalBytes = contentLengthHeader ? Number(contentLengthHeader) : 0;
+
+  if (!response.body || !totalBytes || Number.isNaN(totalBytes)) {
+    const buf = await response.arrayBuffer();
+    return new Uint8Array(buf);
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let loaded = 0;
+  let lastReported = -1;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      chunks.push(value);
+      loaded += value.byteLength;
+      const pct = Math.min(99, Math.round((loaded / totalBytes) * 100));
+      if (pct !== lastReported && pct % 5 === 0) {
+        lastReported = pct;
+        onProgress(pct);
+      }
+    }
+  }
+
+  const merged = new Uint8Array(loaded);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return merged;
+}
+
 export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { recordListeningProgress, listeningHistory, showToast, isOnline } = useApp();
+  const { recordListeningProgress, listeningHistory, showToast, isOnline, isItemDownloaded } = useApp();
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const activeBlobUrlRef = useRef<string | null>(null);
   const lastSyncRef = useRef<number>(0);
   const playRequestIdRef = useRef<number>(0);
   const abortControllerRef = useRef<AbortController | null>(null);
   const currentTrackRef = useRef<ContentItem | null>(null);
+  const unlockingRef = useRef<boolean>(false);
   const activeMetaRef = useRef<{
     reqId: number;
     item: ContentItem;
@@ -87,7 +139,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   useEffect(() => {
     const audio = new Audio();
-    audio.preload = 'metadata';
+    audio.preload = 'auto';
     audioRef.current = audio;
 
     return () => {
@@ -102,7 +154,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     (audio: HTMLAudioElement, item: ContentItem, reqId: number, initialPos: number) => {
       let resumed = false;
       const applyMeta = () => {
-        if (playRequestIdRef.current !== reqId) return;
+        if (playRequestIdRef.current !== reqId || unlockingRef.current) return;
         const finiteDur = audio.duration && Number.isFinite(audio.duration) ? audio.duration : 0;
         if (finiteDur > 0) {
           setDuration(finiteDur);
@@ -144,6 +196,8 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const cached = getCachedDecodedAudio(mediaUrl);
       if (cached) {
         if (playRequestIdRef.current !== reqId || signal.aborted) return false;
+        unlockingRef.current = false;
+        audio.muted = false;
         cleanupBlob();
         const wavUrl = URL.createObjectURL(cached.wavBlob);
         activeBlobUrlRef.current = wavUrl;
@@ -153,7 +207,10 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
 
       const formatLabel = (ext || 'audio').toUpperCase();
-      setLoadingStatus(`Decoding ${formatLabel} audio...`);
+      setLoadingStatus(`Loading ${formatLabel} audio...`);
+
+      // Warm up the WASM decoder module concurrently while downloading bytes
+      const decoderWarmup = preloadAudioDecoder();
 
       let bytes: Uint8Array;
       if (offlineBlob) {
@@ -162,15 +219,17 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         if (!isOnline) {
           throw new Error('This audio is not downloaded and you are currently offline.');
         }
-        const response = await fetch(mediaUrl, { signal });
-        if (!response.ok) {
-          throw new Error(`Unable to fetch audio (${response.status}).`);
-        }
-        bytes = new Uint8Array(await response.arrayBuffer());
+        bytes = await fetchAudioBytesWithProgress(mediaUrl, signal, (pct) => {
+          if (playRequestIdRef.current === reqId && !signal.aborted) {
+            setLoadingStatus(`Loading ${formatLabel} audio... ${pct}%`);
+          }
+        });
       }
 
       if (playRequestIdRef.current !== reqId || signal.aborted) return false;
 
+      setLoadingStatus(`Preparing ${formatLabel} playback...`);
+      await decoderWarmup;
       const decoded = await decodeAudioToWavBlob(bytes, ext, mime);
       if (playRequestIdRef.current !== reqId || signal.aborted) return false;
 
@@ -179,6 +238,8 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         durationSeconds: decoded.durationSeconds,
       });
 
+      unlockingRef.current = false;
+      audio.muted = false;
       cleanupBlob();
       const wavUrl = URL.createObjectURL(decoded.wavBlob);
       activeBlobUrlRef.current = wavUrl;
@@ -190,6 +251,14 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     },
     [isOnline]
   );
+
+  // Synchronously unlock <audio> inside the click tick so mobile browsers allow playback after async fetch/decode
+  const unlockAudioGestureSync = (audio: HTMLAudioElement) => {
+    unlockingRef.current = true;
+    audio.muted = true;
+    audio.src = SILENT_UNLOCK_WAV_URI;
+    audio.play().catch(() => {});
+  };
 
   const loadAndPlay = useCallback(
     async (item: ContentItem, resumeAt?: number) => {
@@ -205,38 +274,35 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       metaCleanupRef.current = null;
 
       audio.pause();
-      setAudioError(null);
-      setLoadingStatus(null);
-      setIsBuffering(true);
-      setIsPlaying(false);
-      setCurrentTrack(item);
-      setCurrentTime(0);
-      setDuration(item.audio.durationSeconds || 0);
-
       cleanupBlob();
-
-      const offlineBlob = await getOfflineMediaBlob(item.audio.url, item.audio.format);
-      if (playRequestIdRef.current !== reqId || controller.signal.aborted) return;
-
-      if (!offlineBlob && !isOnline) {
-        setIsBuffering(false);
-        setIsPlaying(false);
-        setIsPlayingOffline(false);
-        setAudioError('This audio is not downloaded and you are currently offline.');
-        return;
-      }
 
       const mediaUrl = resolveMediaUrl(item.audio.url);
       const ext = extractAudioExtension(item.audio.url, item.audio.format);
       const mime = resolveAudioMimeType({
         url: item.audio.url,
         formatHint: item.audio.format,
-        serverContentType: offlineBlob?.type,
       });
+      const cachedDecoded = getCachedDecodedAudio(mediaUrl);
+      const needsTranscode = shouldTranscodeDirectly(audio, ext, mime) || Boolean(cachedDecoded);
+      const hasOfflineCopy = isItemDownloaded(item.id, 'audio');
 
-      setIsPlayingOffline(Boolean(offlineBlob));
+      // Synchronous UI + Gesture Unlock BEFORE any await!
+      setAudioError(null);
+      setLoadingStatus(
+        cachedDecoded
+          ? null
+          : needsTranscode
+            ? `Loading ${(ext || 'audio').toUpperCase()} audio...`
+            : 'Connecting to audio...'
+      );
+      setIsBuffering(true);
+      setIsPlaying(false);
+      setCurrentTrack(item);
+      setCurrentTime(0);
+      setDuration(cachedDecoded?.durationSeconds || item.audio.durationSeconds || 0);
+      setIsPlayingOffline(hasOfflineCopy);
 
-      // Determine resume position
+      // Determine resume position synchronously
       let initialPos = resumeAt ?? 0;
       if (resumeAt === undefined) {
         const hist = listeningHistory.find((h) => h.contentId === item.id);
@@ -248,49 +314,118 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         }
       }
 
+      // Fast path for native browser formats already online & not offline-cached, OR already decoded in memory cache:
+      // start audio.play() SYNCHRONOUSLY inside the user's tap gesture!
+      let syncPlayPromise: Promise<void> | null = null;
+      if (cachedDecoded) {
+        unlockingRef.current = false;
+        audio.muted = false;
+        const wavUrl = URL.createObjectURL(cachedDecoded.wavBlob);
+        activeBlobUrlRef.current = wavUrl;
+        audio.src = wavUrl;
+        audio.playbackRate = playbackRate;
+        if (initialPos > 0 && cachedDecoded.durationSeconds > 1 && initialPos < cachedDecoded.durationSeconds - 1) {
+          audio.currentTime = initialPos;
+          setCurrentTime(initialPos);
+        }
+        syncPlayPromise = audio.play();
+      } else if (!needsTranscode && !hasOfflineCopy && isOnline) {
+        unlockingRef.current = false;
+        audio.muted = false;
+        audio.src = mediaUrl;
+        audio.playbackRate = playbackRate;
+        syncPlayPromise = audio.play();
+      } else {
+        // Offline blob lookup or non-native transcode requires async work; unlock audio element synchronously now
+        unlockAudioGestureSync(audio);
+        if (needsTranscode && !hasOfflineCopy && isOnline) {
+          preloadAudioDecoder();
+        }
+      }
+
       activeMetaRef.current = {
         reqId,
         item,
         mediaUrl,
         ext,
         mime,
-        offlineBlob,
-        fallbackTried: false,
+        offlineBlob: null,
+        fallbackTried: Boolean(cachedDecoded),
         initialPos,
       };
 
       metaCleanupRef.current = attachMetadataAndResume(audio, item, reqId, initialPos);
 
       try {
-        const directTranscode = shouldTranscodeDirectly(audio, ext, mime) || Boolean(getCachedDecodedAudio(mediaUrl));
-
-        if (directTranscode) {
-          activeMetaRef.current.fallbackTried = true;
-          const ready = await transcodeAndAssignSrc(
-            audio,
-            mediaUrl,
-            ext,
-            mime,
-            offlineBlob,
-            reqId,
-            controller.signal
-          );
-          if (!ready || playRequestIdRef.current !== reqId) return;
-        } else if (offlineBlob) {
-          const blobUrl = URL.createObjectURL(offlineBlob);
-          activeBlobUrlRef.current = blobUrl;
-          audio.src = blobUrl;
+        if (syncPlayPromise) {
+          await syncPlayPromise;
+          if (playRequestIdRef.current !== reqId) return;
+          setLoadingStatus(null);
+          setIsPlaying(true);
+          setIsBuffering(false);
         } else {
-          audio.src = mediaUrl;
+          const offlineBlob = hasOfflineCopy
+            ? await getOfflineMediaBlob(item.audio.url, item.audio.format)
+            : null;
+          if (playRequestIdRef.current !== reqId || controller.signal.aborted) return;
+
+          if (!offlineBlob && !isOnline) {
+            unlockingRef.current = false;
+            audio.muted = false;
+            audio.pause();
+            setLoadingStatus(null);
+            setIsBuffering(false);
+            setIsPlaying(false);
+            setIsPlayingOffline(false);
+            setAudioError('This audio is not downloaded and you are currently offline.');
+            return;
+          }
+
+          const finalMime = resolveAudioMimeType({
+            url: item.audio.url,
+            formatHint: item.audio.format,
+            serverContentType: offlineBlob?.type,
+          });
+          setIsPlayingOffline(Boolean(offlineBlob));
+
+          if (activeMetaRef.current && activeMetaRef.current.reqId === reqId) {
+            activeMetaRef.current.offlineBlob = offlineBlob;
+            activeMetaRef.current.mime = finalMime;
+          }
+
+          if (needsTranscode) {
+            if (activeMetaRef.current) activeMetaRef.current.fallbackTried = true;
+            const ready = await transcodeAndAssignSrc(
+              audio,
+              mediaUrl,
+              ext,
+              finalMime,
+              offlineBlob,
+              reqId,
+              controller.signal
+            );
+            if (!ready || playRequestIdRef.current !== reqId) return;
+          } else if (offlineBlob) {
+            unlockingRef.current = false;
+            audio.muted = false;
+            cleanupBlob();
+            const blobUrl = URL.createObjectURL(offlineBlob);
+            activeBlobUrlRef.current = blobUrl;
+            audio.src = blobUrl;
+          } else {
+            unlockingRef.current = false;
+            audio.muted = false;
+            audio.src = mediaUrl;
+          }
+
+          audio.playbackRate = playbackRate;
+          setLoadingStatus(null);
+          await audio.play();
+
+          if (playRequestIdRef.current !== reqId) return;
+          setIsPlaying(true);
+          setIsBuffering(false);
         }
-
-        audio.playbackRate = playbackRate;
-        setLoadingStatus(null);
-        await audio.play();
-
-        if (playRequestIdRef.current !== reqId) return;
-        setIsPlaying(true);
-        setIsBuffering(false);
 
         if (isOnline) {
           fetch(resolveApiUrl(`/api/content/${item.id}/track`), {
@@ -301,6 +436,8 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         }
       } catch (err: unknown) {
         if (playRequestIdRef.current !== reqId || controller.signal.aborted) return;
+        unlockingRef.current = false;
+        audio.muted = false;
 
         // If direct native playback failed (e.g. 3GP with AMR track or unsupported browser container), auto-fallback to WASM/WebAudio decoder
         const meta = activeMetaRef.current;
@@ -311,8 +448,8 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               audio,
               mediaUrl,
               ext,
-              mime,
-              offlineBlob,
+              meta.mime,
+              meta.offlineBlob,
               reqId,
               controller.signal
             );
@@ -343,7 +480,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setAudioError(message);
       }
     },
-    [playbackRate, listeningHistory, isOnline, attachMetadataAndResume, transcodeAndAssignSrc]
+    [playbackRate, listeningHistory, isOnline, isItemDownloaded, attachMetadataAndResume, transcodeAndAssignSrc]
   );
 
   const playItem = useCallback(
@@ -354,7 +491,13 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
 
       if (currentTrack?.id === item.id && audioRef.current && startAtSeconds === undefined && !audioError) {
+        if (isBuffering) {
+          // Audio is currently loading/decoding; immediately open the full player view
+          setIsExpanded(true);
+          return;
+        }
         if (audioRef.current.paused) {
+          setIsExpanded(true);
           await audioRef.current.play().catch(() => {});
           setIsPlaying(true);
         } else {
@@ -364,6 +507,9 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         return;
       }
 
+      // Immediately open the full-screen audio player overlay synchronously on Play tap
+      setIsExpanded(true);
+
       if (queueItems && queueItems.length > 0) {
         setQueue(queueItems.filter((q) => Boolean(q.audio?.url)));
       } else if (!queue.some((q) => q.id === item.id)) {
@@ -372,7 +518,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
       await loadAndPlay(item, startAtSeconds);
     },
-    [currentTrack, queue, audioError, loadAndPlay, showToast]
+    [currentTrack, queue, audioError, isBuffering, loadAndPlay, showToast]
   );
 
   const togglePlayPause = useCallback(() => {
@@ -382,6 +528,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       loadAndPlay(currentTrack);
       return;
     }
+    if (isBuffering && unlockingRef.current) return;
     if (audio.paused) {
       audio.play().then(() => setIsPlaying(true)).catch(() => {});
     } else {
@@ -393,11 +540,11 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         (Number.isFinite(audio.duration) ? audio.duration : 0) || currentTrack.audio?.durationSeconds || 0
       );
     }
-  }, [currentTrack, audioError, loadAndPlay, recordListeningProgress]);
+  }, [currentTrack, audioError, isBuffering, loadAndPlay, recordListeningProgress]);
 
   const seek = useCallback((seconds: number) => {
     const audio = audioRef.current;
-    if (!audio) return;
+    if (!audio || unlockingRef.current) return;
     const maxDur = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : duration || seconds;
     const clamped = Math.max(0, Math.min(seconds, maxDur));
     audio.currentTime = clamped;
@@ -407,7 +554,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const skipBy = useCallback(
     (deltaSeconds: number) => {
       const audio = audioRef.current;
-      if (!audio) return;
+      if (!audio || unlockingRef.current) return;
       seek(audio.currentTime + deltaSeconds);
     },
     [seek]
@@ -462,11 +609,13 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const closePlayer = useCallback(() => {
     playRequestIdRef.current += 1;
+    unlockingRef.current = false;
     abortControllerRef.current?.abort();
     metaCleanupRef.current?.();
     metaCleanupRef.current = null;
     activeMetaRef.current = null;
     if (audioRef.current) {
+      audioRef.current.muted = false;
       audioRef.current.pause();
       audioRef.current.removeAttribute('src');
       audioRef.current.load();
@@ -486,6 +635,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (!audio) return;
 
     const onTimeUpdate = () => {
+      if (unlockingRef.current) return;
       setCurrentTime(audio.currentTime);
       const validDur = audio.duration && Number.isFinite(audio.duration) ? audio.duration : 0;
       if (validDur > 0) setDuration(validDur);
@@ -495,15 +645,20 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         recordListeningProgress(currentTrack, audio.currentTime, validDur || currentTrack.audio?.durationSeconds || 0);
       }
     };
-    const onWaiting = () => setIsBuffering(true);
+    const onWaiting = () => {
+      if (!unlockingRef.current) setIsBuffering(true);
+    };
     const onPlaying = () => {
+      if (unlockingRef.current) return;
       setIsBuffering(false);
       setLoadingStatus(null);
       setIsPlaying(true);
     };
-    const onPause = () => setIsPlaying(false);
+    const onPause = () => {
+      if (!unlockingRef.current) setIsPlaying(false);
+    };
     const onError = async () => {
-      if (!currentTrackRef.current) return;
+      if (unlockingRef.current || !currentTrackRef.current) return;
       const meta = activeMetaRef.current;
       const signal = abortControllerRef.current?.signal;
 
@@ -553,6 +708,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setAudioError('Playback interrupted. Check connection or download for offline playback.');
     };
     const onEnded = () => {
+      if (unlockingRef.current) return;
       if (currentTrack) {
         const validDur = audio.duration && Number.isFinite(audio.duration) ? audio.duration : 0;
         recordListeningProgress(currentTrack, 0, validDur || currentTrack.audio?.durationSeconds || 0, true);
@@ -585,13 +741,15 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   // Wire lock-screen & headphone MediaSession API
   useEffect(() => {
     if (!currentTrack || !('mediaSession' in navigator)) return;
+    const fallbackArtworkUrl =
+      typeof window !== 'undefined' ? `${window.location.origin}/pwa-512x512.png` : '/pwa-512x512.png';
     navigator.mediaSession.metadata = new MediaMetadata({
       title: currentTrack.title,
       artist: currentTrack.speaker,
       album: currentTrack.seriesTitle || currentTrack.categoryName,
       artwork: currentTrack.coverImage
         ? [{ src: resolveMediaUrl(currentTrack.coverImage), sizes: '512x512', type: 'image/jpeg' }]
-        : [],
+        : [{ src: fallbackArtworkUrl, sizes: '512x512', type: 'image/png' }],
     });
 
     navigator.mediaSession.setActionHandler('play', () => togglePlayPause());

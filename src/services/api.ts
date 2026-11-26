@@ -3,6 +3,10 @@ let authTokenInMemory: string | null = null;
 
 const LS_API_BASE_URL = 'minaratul_huda_api_base_url_v1';
 export const DEFAULT_API_BASE_URL = 'https://studio.ugandakickboxingfederation.org';
+export const APP_LOGO_PATH = '/assets/aistudio/WhatsApp_Image_2026-11-25_at_03.55.32_835749e8.jpeg';
+
+const REQUEST_TIMEOUT_MS = 25000;
+const inflightGets = new Map<string, Promise<unknown>>();
 
 export function setAuthToken(token: string | null) {
   authTokenInMemory = token;
@@ -20,9 +24,38 @@ function normalizeUrl(raw: string | undefined | null): string {
   return cleaned;
 }
 
+function isStaleOrSelfUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    if (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0') {
+      return true;
+    }
+    if (typeof window !== 'undefined' && parsed.origin === window.location.origin) {
+      return true;
+    }
+    // Discard stale preview sandbox URLs saved before production URL was connected
+    if (
+      (host.startsWith('ais-dev-') || host.startsWith('ais-pre-')) &&
+      host.endsWith('.run.app')
+    ) {
+      return true;
+    }
+  } catch {
+    return true;
+  }
+  return false;
+}
+
 export function getStoredApiBaseUrl(): string {
   try {
-    return normalizeUrl(localStorage.getItem(LS_API_BASE_URL));
+    const normalized = normalizeUrl(localStorage.getItem(LS_API_BASE_URL));
+    if (!normalized) return '';
+    if (isStaleOrSelfUrl(normalized)) {
+      localStorage.removeItem(LS_API_BASE_URL);
+      return '';
+    }
+    return normalized;
   } catch {
     return '';
   }
@@ -31,7 +64,7 @@ export function getStoredApiBaseUrl(): string {
 export function setStoredApiBaseUrl(url: string) {
   const normalized = normalizeUrl(url);
   try {
-    if (normalized && normalized !== DEFAULT_API_BASE_URL) {
+    if (normalized && normalized !== DEFAULT_API_BASE_URL && !isStaleOrSelfUrl(normalized)) {
       localStorage.setItem(LS_API_BASE_URL, normalized);
     } else {
       localStorage.removeItem(LS_API_BASE_URL);
@@ -68,6 +101,115 @@ export function resolveMediaUrl(url: string | null | undefined): string {
   return base ? `${base}${normalizedPath}` : normalizedPath;
 }
 
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs = REQUEST_TIMEOUT_MS
+): Promise<Response> {
+  const controller = new AbortController();
+  const externalSignal = init.signal;
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort();
+    } else {
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+  }
+
+  const timer = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    globalThis.clearTimeout(timer);
+    if (externalSignal) {
+      externalSignal.removeEventListener('abort', onExternalAbort);
+    }
+  }
+}
+
+async function executeApiRequest<T>(
+  targetUrl: string,
+  method: string,
+  headers: Headers,
+  options: RequestInit
+): Promise<T> {
+  const maxAttempts = method === 'GET' ? 2 : 1;
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetchWithTimeout(targetUrl, {
+        ...options,
+        cache: options.cache ?? (method === 'GET' ? 'no-store' : 'default'),
+        headers,
+      });
+
+      const contentType = (res.headers.get('content-type') || '').toLowerCase();
+      const rawText = await res.text();
+      const trimmed = rawText.trim();
+      const looksJson =
+        contentType.includes('json') ||
+        trimmed.startsWith('{') ||
+        trimmed.startsWith('[');
+
+      if (!looksJson) {
+        if (attempt < maxAttempts && res.status >= 502 && res.status <= 504) {
+          await new Promise((r) => setTimeout(r, 600));
+          continue;
+        }
+        throw new Error(
+          res.ok
+            ? 'Server returned an unexpected non-JSON response. Verify your Content Server URL.'
+            : `Request failed (${res.status})`
+        );
+      }
+
+      let data: any = {};
+      try {
+        data = trimmed ? JSON.parse(trimmed) : {};
+      } catch {
+        throw new Error(
+          res.ok
+            ? 'Unable to parse response from the content server.'
+            : `Request failed (${res.status})`
+        );
+      }
+
+      if (!res.ok) {
+        if (attempt < maxAttempts && res.status >= 502 && res.status <= 504) {
+          await new Promise((r) => setTimeout(r, 600));
+          continue;
+        }
+        throw new Error(data.error || `Request failed (${res.status})`);
+      }
+
+      return data as T;
+    } catch (err: any) {
+      lastError = err;
+      const isCallerAbort = Boolean(options.signal?.aborted);
+      if (isCallerAbort) throw err;
+
+      const isTransient =
+        err?.name === 'AbortError' ||
+        err instanceof TypeError ||
+        /network|fetch|timeout|50[234]/i.test(String(err?.message || ''));
+
+      if (attempt < maxAttempts && isTransient) {
+        await new Promise((r) => setTimeout(r, 600));
+        continue;
+      }
+
+      if (err?.name === 'AbortError') {
+        throw new Error('The content server took too long to respond. Please try again.');
+      }
+      throw err;
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('Unable to reach content server.');
+}
+
 export async function apiRequest<T = any>(
   path: string,
   options: RequestInit = {}
@@ -91,24 +233,18 @@ export async function apiRequest<T = any>(
   }
 
   const targetUrl = resolveApiUrl(path);
-  const res = await fetch(targetUrl, {
-    ...options,
-    cache: options.cache ?? (method === 'GET' ? 'no-store' : 'default'),
-    headers,
-  });
 
-  const contentType = res.headers.get('content-type') || '';
-  if (!contentType.includes('application/json')) {
-    throw new Error(
-      res.ok
-        ? 'Server returned an unexpected non-JSON response. Verify your Content Server URL.'
-        : `Request failed (${res.status})`
-    );
+  if (method === 'GET' && !authTokenInMemory && !options.signal) {
+    const existing = inflightGets.get(targetUrl);
+    if (existing) {
+      return existing as Promise<T>;
+    }
+    const promise = executeApiRequest<T>(targetUrl, method, headers, options).finally(() => {
+      inflightGets.delete(targetUrl);
+    });
+    inflightGets.set(targetUrl, promise);
+    return promise;
   }
 
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data.error || `Request failed (${res.status})`);
-  }
-  return data as T;
+  return executeApiRequest<T>(targetUrl, method, headers, options);
 }

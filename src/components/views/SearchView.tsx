@@ -16,9 +16,11 @@ const GROUP_ORDER: { slug: string; label: string }[] = [
 ];
 
 export const SearchView: React.FC = () => {
-  const { language, offlineRecords, apiBaseUrl, isOnline, catalogVersion } = useApp();
+  const { language, offlineRecords, catalogItems, apiBaseUrl, isOnline, catalogVersion } = useApp();
   const offlineRecordsRef = useRef(offlineRecords);
   offlineRecordsRef.current = offlineRecords;
+  const catalogItemsRef = useRef(catalogItems);
+  catalogItemsRef.current = catalogItems;
 
   const [query, setQuery] = useState('');
   const [mediaFilter, setMediaFilter] = useState('all');
@@ -26,9 +28,11 @@ export const SearchView: React.FC = () => {
   const [grouped, setGrouped] = useState<Record<string, ContentItem[]>>({});
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const runSearch = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const params = new URLSearchParams({
         q: query.trim(),
@@ -41,20 +45,26 @@ export const SearchView: React.FC = () => {
       );
       setGrouped(res.grouped || {});
       setTotal(res.total || 0);
-    } catch {
-      // Offline local search over downloaded records
+    } catch (err: any) {
+      // Local search over synced catalogItems first, then downloaded offline records
       const needle = query.trim().toLowerCase();
-      const matched = offlineRecordsRef.current
-        .map((r) => r.itemSnapshot)
-        .filter((item) => {
-          if (!needle) return true;
-          return (
-            item.title.toLowerCase().includes(needle) ||
-            item.speaker.toLowerCase().includes(needle) ||
-            item.description.toLowerCase().includes(needle) ||
-            item.tags.some((tg) => tg.toLowerCase().includes(needle))
-          );
-        });
+      const sourceItems =
+        catalogItemsRef.current.length > 0
+          ? catalogItemsRef.current
+          : offlineRecordsRef.current.map((r) => r.itemSnapshot);
+
+      const matched = sourceItems.filter((item) => {
+        if (mediaFilter === 'audio' && !item.audio?.url) return false;
+        if (mediaFilter === 'document' && !item.document?.url) return false;
+        if (mediaFilter === 'transcript' && !item.transcript) return false;
+        if (!needle) return true;
+        return (
+          item.title.toLowerCase().includes(needle) ||
+          item.speaker.toLowerCase().includes(needle) ||
+          item.description.toLowerCase().includes(needle) ||
+          item.tags.some((tg) => tg.toLowerCase().includes(needle))
+        );
+      });
       const unique = Array.from(new Map(matched.map((i) => [i.id, i])).values());
       const nextGrouped: Record<string, ContentItem[]> = {};
       for (const item of unique) {
@@ -64,10 +74,13 @@ export const SearchView: React.FC = () => {
       }
       setGrouped(nextGrouped);
       setTotal(unique.length);
+      if (isOnline && unique.length === 0) {
+        setError(err?.message || 'Unable to search content server.');
+      }
     } finally {
       setLoading(false);
     }
-  }, [query, mediaFilter, sort]);
+  }, [query, mediaFilter, sort, isOnline]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -148,13 +161,29 @@ export const SearchView: React.FC = () => {
             <div key={n} className="h-40 animate-pulse rounded-2xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-[#131C1A]" />
           ))}
         </div>
+      ) : error && total === 0 ? (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-center dark:border-amber-900/60 dark:bg-amber-950/30">
+          <p className="text-sm text-amber-900 dark:text-amber-200">{error}</p>
+          <button
+            type="button"
+            onClick={runSearch}
+            className="mt-3 min-h-[40px] rounded-xl bg-amber-800 px-4 py-2 text-xs font-medium text-white cursor-pointer"
+          >
+            Retry
+          </button>
+        </div>
       ) : total === 0 ? (
         <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center dark:border-slate-800 dark:bg-[#131C1A]">
           <p className="text-sm text-slate-500 dark:text-slate-400">{t(language, 'noResults')}</p>
         </div>
       ) : (
         <div className="space-y-8">
-          {GROUP_ORDER.map(({ slug, label }) => {
+          {[
+            ...GROUP_ORDER,
+            ...Object.keys(grouped)
+              .filter((slug) => !GROUP_ORDER.some((g) => g.slug === slug))
+              .map((slug) => ({ slug, label: slug.toUpperCase() })),
+          ].map(({ slug, label }) => {
             const list = grouped[slug] || [];
             if (list.length === 0) return null;
             return (

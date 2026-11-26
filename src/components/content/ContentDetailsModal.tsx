@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { BookOpen, Calendar, ListPlus, MapPin, Tag, User, WifiOff, X } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Calendar, ListPlus, MapPin, Tag, User, WifiOff, X } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { useAudio } from '../../context/AudioContext';
 import {
@@ -8,7 +8,7 @@ import {
   getLocalizedTitle,
   t,
 } from '../../i18n/translations';
-import { resolveMediaUrl } from '../../services/api';
+import { APP_LOGO_PATH, resolveMediaUrl } from '../../services/api';
 import { formatBytes, formatDuration } from '../../services/offlineManager';
 import {
   DownloadAudioButton,
@@ -24,6 +24,10 @@ export const ContentDetailsModal: React.FC = () => {
   const { selectedContent, closeContentDetails, language, isOnline, isItemDownloaded } = useApp();
   const { addToQueue } = useAudio();
   const [imgError, setImgError] = useState(false);
+
+  useEffect(() => {
+    setImgError(false);
+  }, [selectedContent?.id, selectedContent?.coverImage]);
 
   if (!selectedContent) return null;
 
@@ -80,9 +84,11 @@ export const ContentDetailsModal: React.FC = () => {
                   className="h-full w-full object-cover"
                 />
               ) : (
-                <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-emerald-900 to-emerald-700 text-amber-200">
-                  <BookOpen className="w-10 h-10" />
-                </div>
+                <img
+                  src={APP_LOGO_PATH}
+                  alt="Minaratul Huda"
+                  className="h-full w-full object-cover"
+                />
               )}
             </div>
 

@@ -7,16 +7,18 @@ import type { ContentItem, QASubmission } from '../../types/content';
 import { ContentCard } from '../content/ContentCard';
 
 export const QAView: React.FC = () => {
-  const { language, user, setSection, showToast, offlineRecords, apiBaseUrl, isOnline, catalogVersion } = useApp();
+  const { language, user, setSection, showToast, offlineRecords, catalogItems, apiBaseUrl, isOnline, catalogVersion } = useApp();
   const [qaContent, setQaContent] = useState<ContentItem[]>([]);
   const [myQuestions, setMyQuestions] = useState<QASubmission[]>([]);
   const [topic, setTopic] = useState('Fiqh of Worship');
   const [questionText, setQuestionText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const loadQA = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const res = await apiRequest<{ items: ContentItem[] }>('/api/content?category=qa&limit=25');
       setQaContent(res.items || []);
@@ -24,15 +26,24 @@ export const QAView: React.FC = () => {
         const myRes = await apiRequest<{ items: QASubmission[] }>('/api/user/qa');
         setMyQuestions(myRes.items || []);
       }
-    } catch {
-      const offline = offlineRecords
-        .map((r) => r.itemSnapshot)
-        .filter((i) => i.categorySlug === 'qa');
-      setQaContent(Array.from(new Map(offline.map((i) => [i.id, i])).values()));
+    } catch (err: any) {
+      const cachedQa = catalogItems.filter((i) => i.categorySlug === 'qa');
+      if (cachedQa.length > 0) {
+        setQaContent(cachedQa);
+      } else {
+        const offline = offlineRecords
+          .map((r) => r.itemSnapshot)
+          .filter((i) => i.categorySlug === 'qa');
+        const unique = Array.from(new Map(offline.map((i) => [i.id, i])).values());
+        setQaContent(unique);
+        if (isOnline && unique.length === 0) {
+          setError(err?.message || 'Unable to fetch Q&A items from content server.');
+        }
+      }
     } finally {
       setLoading(false);
     }
-  }, [user, offlineRecords]);
+  }, [user, offlineRecords, catalogItems, isOnline]);
 
   useEffect(() => {
     loadQA();
@@ -166,6 +177,17 @@ export const QAView: React.FC = () => {
             {[1, 2].map((n) => (
               <div key={n} className="h-44 animate-pulse rounded-2xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-[#131C1A]" />
             ))}
+          </div>
+        ) : error && qaContent.length === 0 ? (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-center dark:border-amber-900/60 dark:bg-amber-950/30">
+            <p className="text-sm text-amber-900 dark:text-amber-200">{error}</p>
+            <button
+              type="button"
+              onClick={loadQA}
+              className="mt-3 min-h-[40px] rounded-xl bg-amber-800 px-4 py-2 text-xs font-medium text-white cursor-pointer"
+            >
+              Retry
+            </button>
           </div>
         ) : qaContent.length === 0 ? (
           <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center space-y-1.5 dark:border-slate-800 dark:bg-[#131C1A]">

@@ -52,6 +52,9 @@ interface AppContextValue {
   categories: Category[];
   seriesList: SeriesItem[];
   notifications: NotificationItem[];
+  catalogItems: ContentItem[];
+  catalogLoading: boolean;
+  catalogError: string | null;
   refreshCatalogMeta: () => Promise<void>;
   // Favorites
   favoriteIds: Set<string>;
@@ -140,11 +143,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [catalogVersion, setCatalogVersion] = useState<number>(0);
   const lastSyncMsRef = useRef<number>(0);
+  const syncInflightRef = useRef<Promise<void> | null>(null);
+  const wasOnlineRef = useRef<boolean>(isOnline);
 
   const [user, setUser] = useState<UserProfile | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [seriesList, setSeriesList] = useState<SeriesItem[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [catalogItems, setCatalogItems] = useState<ContentItem[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState<boolean>(true);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
 
   const [favoriteItems, setFavoriteItems] = useState<ContentItem[]>(() => {
     const loaded = readJsonStorage<ContentItem[]>(LS_FAVORITES, []);
@@ -239,76 +247,107 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Reconcile cached client state with live server catalog so deleted items never persist
   const refreshCatalogMeta = useCallback(async () => {
-    if (!getApiBaseUrl()) return;
-    try {
-      const [catRes, serRes, notifRes, catalogRes] = await Promise.all([
-        apiRequest<{ categories: Category[] }>('/api/categories'),
-        apiRequest<{ series: SeriesItem[] }>('/api/series'),
-        apiRequest<{ notifications: NotificationItem[] }>('/api/notifications'),
-        apiRequest<{ items: ContentItem[] }>('/api/content?limit=500'),
-      ]);
-      lastSyncMsRef.current = Date.now();
-      setCategories(catRes.categories || []);
-      setSeriesList(serRes.series || []);
-      setNotifications(notifRes.notifications || []);
-      setLastSyncedAt(new Date().toISOString());
-      setCatalogVersion((v) => v + 1);
-
-      const publishedMap = new Map<string, ContentItem>(
-        (catalogRes.items || []).map((item) => [item.id, item])
-      );
-
-      setSelectedContent((prev) => (prev ? publishedMap.get(prev.id) || null : null));
-
-      setFavoriteItems((prev) => {
-        const next = prev
-          .filter((item) => publishedMap.has(item.id))
-          .map((item) => publishedMap.get(item.id)!);
-        localStorage.setItem(LS_FAVORITES, JSON.stringify(next));
-        return next;
-      });
-
-      setListeningHistory((prev) => {
-        const next = prev
-          .filter((entry) => publishedMap.has(entry.contentId))
-          .map((entry) => ({ ...entry, item: publishedMap.get(entry.contentId)! }));
-        localStorage.setItem(LS_LISTEN_HIST, JSON.stringify(next));
-        return next;
-      });
-
-      setReadingHistory((prev) => {
-        const next = prev
-          .filter((entry) => publishedMap.has(entry.contentId))
-          .map((entry) => ({ ...entry, item: publishedMap.get(entry.contentId)! }));
-        localStorage.setItem(LS_READ_HIST, JSON.stringify(next));
-        return next;
-      });
-
-      const currentOffline = await getAllOfflineRecords();
-      let offlineChanged = false;
-      for (const rec of currentOffline) {
-        if (!publishedMap.has(rec.contentId)) {
-          await deleteOfflineRecord(rec.contentId, rec.kind, rec.url).catch(() => {});
-          offlineChanged = true;
-        }
-      }
-      if (offlineChanged) {
-        await reloadOfflineRecords();
-      }
-    } catch {
-      // Offline fallback: retain only verified non-seed local offline records
+    if (!getApiBaseUrl()) {
+      setCatalogLoading(false);
+      return;
     }
-  }, [reloadOfflineRecords]);
+    if (syncInflightRef.current) {
+      return syncInflightRef.current;
+    }
+
+    const runSync = async () => {
+      setCatalogLoading((prev) => prev || catalogItems.length === 0);
+      setCatalogError(null);
+      try {
+        const [catalogRes, catRes, serRes, notifRes] = await Promise.allSettled([
+          apiRequest<{ items: ContentItem[] }>('/api/content?limit=500'),
+          apiRequest<{ categories: Category[] }>('/api/categories'),
+          apiRequest<{ series: SeriesItem[] }>('/api/series'),
+          apiRequest<{ notifications: NotificationItem[] }>('/api/notifications'),
+        ]);
+
+        if (catRes.status === 'fulfilled') {
+          setCategories(catRes.value.categories || []);
+        }
+        if (serRes.status === 'fulfilled') {
+          setSeriesList(serRes.value.series || []);
+        }
+        if (notifRes.status === 'fulfilled') {
+          setNotifications(notifRes.value.notifications || []);
+        }
+
+        if (catalogRes.status === 'fulfilled') {
+          const items = catalogRes.value.items || [];
+          lastSyncMsRef.current = Date.now();
+          setCatalogItems(items);
+          setLastSyncedAt(new Date().toISOString());
+          setCatalogVersion((v) => v + 1);
+          setCatalogError(null);
+
+          const publishedMap = new Map<string, ContentItem>(items.map((item) => [item.id, item]));
+
+          setSelectedContent((prev) => (prev ? publishedMap.get(prev.id) || null : null));
+
+          setFavoriteItems((prev) => {
+            const next = prev
+              .filter((item) => publishedMap.has(item.id))
+              .map((item) => publishedMap.get(item.id)!);
+            localStorage.setItem(LS_FAVORITES, JSON.stringify(next));
+            return next;
+          });
+
+          setListeningHistory((prev) => {
+            const next = prev
+              .filter((entry) => publishedMap.has(entry.contentId))
+              .map((entry) => ({ ...entry, item: publishedMap.get(entry.contentId)! }));
+            localStorage.setItem(LS_LISTEN_HIST, JSON.stringify(next));
+            return next;
+          });
+
+          setReadingHistory((prev) => {
+            const next = prev
+              .filter((entry) => publishedMap.has(entry.contentId))
+              .map((entry) => ({ ...entry, item: publishedMap.get(entry.contentId)! }));
+            localStorage.setItem(LS_READ_HIST, JSON.stringify(next));
+            return next;
+          });
+
+          const currentOffline = await getAllOfflineRecords();
+          let offlineChanged = false;
+          for (const rec of currentOffline) {
+            if (!publishedMap.has(rec.contentId)) {
+              await deleteOfflineRecord(rec.contentId, rec.kind, rec.url).catch(() => {});
+              offlineChanged = true;
+            }
+          }
+          if (offlineChanged) {
+            await reloadOfflineRecords();
+          }
+        } else {
+          const reason = catalogRes.reason;
+          setCatalogError(reason instanceof Error ? reason.message : 'Unable to reach content server.');
+        }
+      } finally {
+        setCatalogLoading(false);
+        syncInflightRef.current = null;
+      }
+    };
+
+    const promise = runSync();
+    syncInflightRef.current = promise;
+    return promise;
+  }, [reloadOfflineRecords, catalogItems.length]);
 
   useEffect(() => {
     refreshCatalogMeta();
   }, [refreshCatalogMeta]);
 
-  // Re-fetch fresh data from the web app on reconnect, tab foregrounding, and periodic section switches
+  // Re-fetch fresh data when network recovers from offline -> online
   useEffect(() => {
-    if (isOnline) {
+    if (isOnline && !wasOnlineRef.current) {
       refreshCatalogMeta();
     }
+    wasOnlineRef.current = isOnline;
   }, [isOnline, refreshCatalogMeta]);
 
   useEffect(() => {
@@ -708,6 +747,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         categories,
         seriesList,
         notifications,
+        catalogItems,
+        catalogLoading,
+        catalogError,
         refreshCatalogMeta,
         favoriteIds,
         favoriteItems,

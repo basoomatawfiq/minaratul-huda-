@@ -1,6 +1,5 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
-  BookOpen,
   ChevronDown,
   ChevronUp,
   ListMusic,
@@ -18,7 +17,7 @@ import {
 import { useApp } from '../../context/AppContext';
 import { useAudio } from '../../context/AudioContext';
 import { getLocalizedTitle } from '../../i18n/translations';
-import { resolveMediaUrl } from '../../services/api';
+import { APP_LOGO_PATH, resolveMediaUrl } from '../../services/api';
 import { formatDuration } from '../../services/offlineManager';
 import { DownloadAudioButton, FavoriteButton, ReadButton } from '../content/ActionButtons';
 
@@ -49,10 +48,17 @@ export const AudioPlayerOverlay: React.FC = () => {
     closePlayer,
   } = useAudio();
 
+  const [coverError, setCoverError] = useState(false);
+
+  useEffect(() => {
+    setCoverError(false);
+  }, [currentTrack?.id, currentTrack?.coverImage]);
+
   if (!currentTrack) return null;
 
   const title = getLocalizedTitle(currentTrack, language);
   const progressPct = duration > 0 ? Math.min(100, (currentTime / duration) * 100) : 0;
+  const coverSrc = currentTrack.coverImage && !coverError ? resolveMediaUrl(currentTrack.coverImage) : APP_LOGO_PATH;
 
   return (
     <>
@@ -71,18 +77,13 @@ export const AudioPlayerOverlay: React.FC = () => {
               onClick={() => setIsExpanded(true)}
               className="flex min-w-0 flex-1 items-center gap-3 text-start cursor-pointer"
             >
-              {currentTrack.coverImage ? (
-                <img
-                  src={resolveMediaUrl(currentTrack.coverImage)}
-                  alt={title}
-                  referrerPolicy="no-referrer"
-                  className="h-10 w-10 rounded-lg object-cover shrink-0 border border-slate-200 dark:border-slate-700"
-                />
-              ) : (
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-emerald-900 to-emerald-700 text-amber-200">
-                  <BookOpen className="w-4 h-4" />
-                </div>
-              )}
+              <img
+                src={coverSrc}
+                alt={title}
+                referrerPolicy="no-referrer"
+                onError={() => setCoverError(true)}
+                className="h-10 w-10 rounded-lg object-cover shrink-0 border border-slate-200 dark:border-slate-700"
+              />
               <div className="min-w-0 flex-1">
                 <p className="text-xs sm:text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
                   {title}
@@ -140,7 +141,7 @@ export const AudioPlayerOverlay: React.FC = () => {
 
       {/* Full-Screen Audio Player Modal */}
       {isExpanded && (
-        <div className="fixed inset-0 h-[100dvh] w-full z-50 flex flex-col bg-[#F8F8F6] dark:bg-[#0B1110] overflow-y-auto">
+        <div className="fixed inset-0 h-[100dvh] w-full z-[60] flex flex-col bg-[#F8F8F6] dark:bg-[#0B1110] overflow-y-auto">
           <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-between px-4 py-4 sm:p-8 pb-[max(1.25rem,env(safe-area-inset-bottom))]">
             {/* Top Controls */}
             <div className="flex items-center justify-between gap-2">
@@ -160,24 +161,27 @@ export const AudioPlayerOverlay: React.FC = () => {
 
               <div className="flex items-center gap-1 shrink-0">
                 <FavoriteButton item={currentTrack} />
+                <button
+                  type="button"
+                  onClick={closePlayer}
+                  aria-label="Close player"
+                  className="min-h-[44px] min-w-[44px] inline-flex items-center justify-center rounded-xl text-slate-500 hover:bg-slate-200/60 hover:text-slate-800 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-200 cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
               </div>
             </div>
 
             {/* Artwork & Metadata */}
             <div className="my-3 sm:my-6 flex flex-col items-center text-center">
               <div className="h-40 w-40 sm:h-56 sm:w-56 md:h-64 md:w-64 overflow-hidden rounded-3xl border border-slate-200 dark:border-slate-800 shadow-xl">
-                {currentTrack.coverImage ? (
-                  <img
-                    src={resolveMediaUrl(currentTrack.coverImage)}
-                    alt={title}
-                    referrerPolicy="no-referrer"
-                    className="h-full w-full object-cover"
-                  />
-                ) : (
-                  <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-emerald-900 to-emerald-700 text-amber-200">
-                    <BookOpen className="w-16 h-16" />
-                  </div>
-                )}
+                <img
+                  src={coverSrc}
+                  alt={title}
+                  referrerPolicy="no-referrer"
+                  onError={() => setCoverError(true)}
+                  className="h-full w-full object-cover"
+                />
               </div>
 
               <h2
@@ -192,9 +196,10 @@ export const AudioPlayerOverlay: React.FC = () => {
                 {currentTrack.seriesTitle ? ` · ${currentTrack.seriesTitle}` : ''}
               </p>
 
-              {loadingStatus && !audioError && (
-                <p className="mt-2 text-xs font-medium text-emerald-700 dark:text-emerald-400">
-                  {loadingStatus}
+              {(loadingStatus || (isBuffering && !isPlaying)) && !audioError && (
+                <p className="mt-2 inline-flex items-center gap-2 text-xs font-medium text-emerald-700 dark:text-emerald-400">
+                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-emerald-700 border-t-transparent dark:border-emerald-400 dark:border-t-transparent" />
+                  <span>{loadingStatus || 'Starting audio playback...'}</span>
                 </p>
               )}
 

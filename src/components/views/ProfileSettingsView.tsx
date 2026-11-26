@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Bell, Globe, LogOut, Moon, RefreshCw, Server, Sun, Trash2, User } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { t } from '../../i18n/translations';
-import { apiRequest, getApiBaseUrl } from '../../services/api';
+import { APP_LOGO_PATH, apiRequest, getApiBaseUrl } from '../../services/api';
 import { formatBytes } from '../../services/offlineManager';
 import type { AppLanguage, ThemeMode } from '../../types/content';
 
@@ -469,8 +469,18 @@ export const SettingsView: React.FC = () => {
       </section>
 
       {/* About, Privacy & Terms */}
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 text-xs leading-relaxed text-slate-600 space-y-2 dark:border-slate-800 dark:bg-[#131C1A] dark:text-slate-400">
-        <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">About Minaratul Huda</p>
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 text-xs leading-relaxed text-slate-600 space-y-3 dark:border-slate-800 dark:bg-[#131C1A] dark:text-slate-400">
+        <div className="flex items-center gap-3">
+          <img
+            src={APP_LOGO_PATH}
+            alt="Minaratul Huda Logo"
+            className="h-10 w-10 rounded-xl object-cover border border-slate-200 dark:border-slate-700 shrink-0"
+          />
+          <div>
+            <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">About Minaratul Huda</p>
+            <p className="text-[11px] text-emerald-700 dark:text-emerald-400">Guidance for a Better Life</p>
+          </div>
+        </div>
         <p>
           Minaratul Huda provides verified Quran Tafseer, Hadith, Friday Speeches, Q&amp;A, and educational documents with zero advertisements and offline accessibility for elders and students alike.
         </p>

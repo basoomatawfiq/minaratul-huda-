@@ -145,7 +145,7 @@ export const UniversalReader: React.FC = () => {
   };
 
   return (
-    <div className="fixed inset-0 h-[100dvh] w-full z-50 flex flex-col overflow-hidden bg-[#F8F8F6] dark:bg-[#0B1110]">
+    <div className="fixed inset-0 h-[100dvh] w-full z-[70] flex flex-col overflow-hidden bg-[#F8F8F6] dark:bg-[#0B1110]">
       {/* Reader Top Toolbar */}
       <header className="border-b border-slate-200 bg-white/95 px-3 sm:px-4 py-3 backdrop-blur-md dark:border-slate-800 dark:bg-[#131C1A]/95 shrink-0">
         <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-3">

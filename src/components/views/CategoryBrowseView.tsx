@@ -17,9 +17,20 @@ export const CategoryBrowseView: React.FC<CategoryBrowseViewProps> = ({
   titleKey,
   subtitle,
 }) => {
-  const { language, seriesList, offlineRecords, isOnline, apiBaseUrl, catalogVersion, refreshCatalogMeta } = useApp();
+  const {
+    language,
+    seriesList,
+    offlineRecords,
+    catalogItems,
+    isOnline,
+    apiBaseUrl,
+    catalogVersion,
+    refreshCatalogMeta,
+  } = useApp();
   const offlineRecordsRef = useRef(offlineRecords);
   offlineRecordsRef.current = offlineRecords;
+  const catalogItemsRef = useRef(catalogItems);
+  catalogItemsRef.current = catalogItems;
 
   const [selectedSeriesId, setSelectedSeriesId] = useState<string>('');
   const [mediaFilter, setMediaFilter] = useState<'all' | 'audio' | 'document' | 'transcript'>('all');
@@ -28,6 +39,7 @@ export const CategoryBrowseView: React.FC<CategoryBrowseViewProps> = ({
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const categorySeries = seriesList.filter((s) => s.categorySlug === categorySlug);
 
@@ -42,9 +54,11 @@ export const CategoryBrowseView: React.FC<CategoryBrowseViewProps> = ({
       if (!getApiBaseUrl()) {
         setItems([]);
         setLoading(false);
+        setError(null);
         return;
       }
       if (pageNum === 1) setLoading(true);
+      setError(null);
       try {
         const params = new URLSearchParams({
           category: categorySlug,
@@ -65,18 +79,33 @@ export const CategoryBrowseView: React.FC<CategoryBrowseViewProps> = ({
         }
         setPage(pageNum);
         setTotalPages(res.pagination?.totalPages || 1);
-      } catch {
-        // Offline fallback filtered by category
-        const offline = offlineRecordsRef.current
-          .map((r) => r.itemSnapshot)
-          .filter((i) => i.categorySlug === categorySlug);
-        const unique = Array.from(new Map(offline.map((i) => [i.id, i])).values());
-        setItems(unique);
+      } catch (err: any) {
+        const cachedRemote = catalogItemsRef.current.filter((i) => {
+          if (i.categorySlug !== categorySlug) return false;
+          if (selectedSeriesId && i.seriesId !== selectedSeriesId) return false;
+          if (mediaFilter === 'audio' && !i.audio?.url) return false;
+          if (mediaFilter === 'document' && !i.document?.url) return false;
+          if (mediaFilter === 'transcript' && !i.transcript) return false;
+          return true;
+        });
+
+        if (cachedRemote.length > 0) {
+          setItems(cachedRemote);
+        } else {
+          const offline = offlineRecordsRef.current
+            .map((r) => r.itemSnapshot)
+            .filter((i) => i.categorySlug === categorySlug);
+          const unique = Array.from(new Map(offline.map((i) => [i.id, i])).values());
+          setItems(unique);
+          if (isOnline && unique.length === 0) {
+            setError(err?.message || 'Unable to fetch items from the content server.');
+          }
+        }
       } finally {
         setLoading(false);
       }
     },
-    [categorySlug, selectedSeriesId, mediaFilter, sort]
+    [categorySlug, selectedSeriesId, mediaFilter, sort, isOnline]
   );
 
   useEffect(() => {
@@ -184,6 +213,17 @@ export const CategoryBrowseView: React.FC<CategoryBrowseViewProps> = ({
               className="h-44 animate-pulse rounded-2xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-[#131C1A]"
             />
           ))}
+        </div>
+      ) : error && items.length === 0 ? (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-center dark:border-amber-900/60 dark:bg-amber-950/30">
+          <p className="text-sm text-amber-900 dark:text-amber-200">{error}</p>
+          <button
+            type="button"
+            onClick={() => fetchItems(1, false)}
+            className="mt-3 min-h-[40px] rounded-xl bg-amber-800 px-4 py-2 text-xs font-medium text-white cursor-pointer"
+          >
+            Retry
+          </button>
         </div>
       ) : items.length === 0 ? (
         <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center space-y-2 dark:border-slate-800 dark:bg-[#131C1A]">

@@ -15,7 +15,7 @@ import {
 import { useApp } from '../../context/AppContext';
 import { useAudio } from '../../context/AudioContext';
 import { getLocalizedTitle, t } from '../../i18n/translations';
-import { apiRequest, getApiBaseUrl, resolveMediaUrl } from '../../services/api';
+import { APP_LOGO_PATH, apiRequest, getApiBaseUrl, resolveMediaUrl } from '../../services/api';
 import { formatDuration } from '../../services/offlineManager';
 import type { AppSection, ContentItem } from '../../types/content';
 import { ContentCard } from '../content/ContentCard';
@@ -27,6 +27,8 @@ export const HomeView: React.FC = () => {
     isOnline,
     apiBaseUrl,
     catalogVersion,
+    catalogItems,
+    catalogError,
     listeningHistory,
     favoriteItems,
     offlineRecords,
@@ -59,7 +61,7 @@ export const HomeView: React.FC = () => {
     setError(null);
 
     try {
-      const [featRes, recRes] = await Promise.all([
+      const [featSettled, recSettled] = await Promise.allSettled([
         pageNum === 1
           ? apiRequest<{ items: ContentItem[] }>('/api/content?featured=true&limit=3')
           : Promise.resolve(null),
@@ -68,14 +70,22 @@ export const HomeView: React.FC = () => {
         ),
       ]);
 
-      if (featRes) setFeatured(featRes.items || []);
-      if (append) {
-        setRecentItems((prev) => [...prev, ...(recRes.items || [])]);
-      } else {
-        setRecentItems(recRes.items || []);
+      if (featSettled.status === 'fulfilled' && featSettled.value) {
+        setFeatured(featSettled.value.items || []);
       }
-      setPage(pageNum);
-      setTotalPages(recRes.pagination?.totalPages || 1);
+
+      if (recSettled.status === 'fulfilled') {
+        const recRes = recSettled.value;
+        if (append) {
+          setRecentItems((prev) => [...prev, ...(recRes.items || [])]);
+        } else {
+          setRecentItems(recRes.items || []);
+        }
+        setPage(pageNum);
+        setTotalPages(recRes.pagination?.totalPages || 1);
+      } else {
+        throw recSettled.reason;
+      }
     } catch (err: any) {
       setError(err?.message || 'Unable to load latest teachings.');
     } finally {
@@ -90,9 +100,11 @@ export const HomeView: React.FC = () => {
 
   // Only fall back to downloaded snapshots when offline or when remote fetch failed
   const offlineFallbackItems = offlineRecords.map((r) => r.itemSnapshot);
+  const remoteItems = recentItems.length > 0 ? recentItems : catalogItems;
+  const effectiveError = remoteItems.length > 0 ? null : error || catalogError;
   const displayItems =
-    recentItems.length > 0 ? recentItems : !isOnline || error ? offlineFallbackItems : [];
-  const heroItem = featured[0] || displayItems[0];
+    remoteItems.length > 0 ? remoteItems : !isOnline || effectiveError ? offlineFallbackItems : [];
+  const heroItem = featured[0] || displayItems.find((i) => i.featured) || displayItems[0];
 
   const sectionTiles: { id: AppSection; label: string; subtitle: string; icon: React.ReactNode }[] = [
     { id: 'tafseer', label: t(language, 'tafseer'), subtitle: 'Surah-by-Surah Exegesis', icon: <BookOpen className="w-5 h-5" /> },
@@ -110,10 +122,17 @@ export const HomeView: React.FC = () => {
         <div className="grid grid-cols-1 lg:grid-cols-12 items-stretch">
           <div className="lg:col-span-7 p-5 sm:p-8 lg:p-10 flex flex-col justify-between bg-gradient-to-br from-[#0F4C3A] via-[#0C3D2F] to-[#082920] text-white min-w-0">
             <div>
-              <p className="text-xs font-medium tracking-wide text-amber-300">
-                {t(language, 'brandFull')}
-              </p>
-              <h1 className="mt-2 font-display text-2xl sm:text-3xl lg:text-4xl font-bold leading-tight text-balance">
+              <div className="flex items-center gap-3">
+                <img
+                  src={APP_LOGO_PATH}
+                  alt="Minaratul Huda Logo"
+                  className="h-11 w-11 sm:h-12 sm:w-12 rounded-xl object-cover ring-1 ring-white/25 shadow-md shrink-0"
+                />
+                <p className="text-xs sm:text-sm font-semibold tracking-wide text-amber-300">
+                  {t(language, 'brandFull')}
+                </p>
+              </div>
+              <h1 className="mt-3 font-display text-2xl sm:text-3xl lg:text-4xl font-bold leading-tight text-balance">
                 {t(language, 'tagline')}
               </h1>
               <p className="mt-3 max-w-xl text-sm sm:text-base text-emerald-100/90 leading-relaxed">
@@ -209,9 +228,11 @@ export const HomeView: React.FC = () => {
                     className="h-12 w-12 rounded-xl object-cover shrink-0"
                   />
                 ) : (
-                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-900 to-emerald-700 text-amber-200">
-                    <BookOpen className="w-5 h-5" />
-                  </div>
+                  <img
+                    src={APP_LOGO_PATH}
+                    alt="Minaratul Huda"
+                    className="h-12 w-12 rounded-xl object-cover shrink-0 border border-slate-200 dark:border-slate-700"
+                  />
                 )}
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
@@ -309,12 +330,15 @@ export const HomeView: React.FC = () => {
               />
             ))}
           </div>
-        ) : error && displayItems.length === 0 ? (
+        ) : effectiveError && displayItems.length === 0 ? (
           <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-center dark:border-amber-900/60 dark:bg-amber-950/30">
-            <p className="text-sm text-amber-900 dark:text-amber-200">{error}</p>
+            <p className="text-sm text-amber-900 dark:text-amber-200">{effectiveError}</p>
             <button
               type="button"
-              onClick={() => fetchHomeData(1, false)}
+              onClick={() => {
+                refreshCatalogMeta();
+                fetchHomeData(1, false);
+              }}
               className="mt-3 min-h-[40px] rounded-xl bg-amber-800 px-4 py-2 text-xs font-medium text-white cursor-pointer"
             >
               Retry
