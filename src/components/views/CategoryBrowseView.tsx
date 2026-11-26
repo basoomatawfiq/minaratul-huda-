@@ -1,8 +1,8 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Layers, RefreshCw } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { t } from '../../i18n/translations';
-import { apiRequest } from '../../services/api';
+import { apiRequest, getApiBaseUrl } from '../../services/api';
 import type { ContentItem } from '../../types/content';
 import { ContentCard } from '../content/ContentCard';
 
@@ -17,7 +17,9 @@ export const CategoryBrowseView: React.FC<CategoryBrowseViewProps> = ({
   titleKey,
   subtitle,
 }) => {
-  const { language, seriesList, offlineRecords, isOnline, refreshCatalogMeta } = useApp();
+  const { language, seriesList, offlineRecords, isOnline, apiBaseUrl, catalogVersion, refreshCatalogMeta } = useApp();
+  const offlineRecordsRef = useRef(offlineRecords);
+  offlineRecordsRef.current = offlineRecords;
 
   const [selectedSeriesId, setSelectedSeriesId] = useState<string>('');
   const [mediaFilter, setMediaFilter] = useState<'all' | 'audio' | 'document' | 'transcript'>('all');
@@ -37,6 +39,11 @@ export const CategoryBrowseView: React.FC<CategoryBrowseViewProps> = ({
 
   const fetchItems = useCallback(
     async (pageNum = 1, append = false) => {
+      if (!getApiBaseUrl()) {
+        setItems([]);
+        setLoading(false);
+        return;
+      }
       if (pageNum === 1) setLoading(true);
       try {
         const params = new URLSearchParams({
@@ -60,7 +67,7 @@ export const CategoryBrowseView: React.FC<CategoryBrowseViewProps> = ({
         setTotalPages(res.pagination?.totalPages || 1);
       } catch {
         // Offline fallback filtered by category
-        const offline = offlineRecords
+        const offline = offlineRecordsRef.current
           .map((r) => r.itemSnapshot)
           .filter((i) => i.categorySlug === categorySlug);
         const unique = Array.from(new Map(offline.map((i) => [i.id, i])).values());
@@ -69,12 +76,12 @@ export const CategoryBrowseView: React.FC<CategoryBrowseViewProps> = ({
         setLoading(false);
       }
     },
-    [categorySlug, selectedSeriesId, mediaFilter, sort, offlineRecords]
+    [categorySlug, selectedSeriesId, mediaFilter, sort]
   );
 
   useEffect(() => {
     fetchItems(1, false);
-  }, [fetchItems]);
+  }, [fetchItems, apiBaseUrl, isOnline, catalogVersion]);
 
   return (
     <div className="space-y-6">
@@ -137,21 +144,23 @@ export const CategoryBrowseView: React.FC<CategoryBrowseViewProps> = ({
 
       {/* Filter & Sort Bar */}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-1 rounded-xl bg-slate-200/60 p-1 dark:bg-slate-800/80">
-          {(['all', 'audio', 'document', 'transcript'] as const).map((m) => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => setMediaFilter(m)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap cursor-pointer ${
-                mediaFilter === m
-                  ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-700 dark:text-white'
-                  : 'text-slate-600 hover:text-slate-900 dark:text-slate-300'
-              }`}
-            >
-              {m === 'all' ? 'All Formats' : m === 'audio' ? 'Audio' : m === 'document' ? 'PDF / Docs' : 'Transcripts'}
-            </button>
-          ))}
+        <div className="max-w-full overflow-x-auto no-scrollbar rounded-xl bg-slate-200/60 p-1 dark:bg-slate-800/80">
+          <div className="flex items-center gap-1 w-max">
+            {(['all', 'audio', 'document', 'transcript'] as const).map((m) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => setMediaFilter(m)}
+                className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  mediaFilter === m
+                    ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-700 dark:text-white'
+                    : 'text-slate-600 hover:text-slate-900 dark:text-slate-300'
+                }`}
+              >
+                {m === 'all' ? 'All Formats' : m === 'audio' ? 'Audio' : m === 'document' ? 'PDF / Docs' : 'Transcripts'}
+              </button>
+            ))}
+          </div>
         </div>
 
         <select

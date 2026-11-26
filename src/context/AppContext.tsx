@@ -42,6 +42,7 @@ interface AppContextValue {
   apiBaseUrl: string;
   updateApiBaseUrl: (url: string) => Promise<void>;
   lastSyncedAt: string | null;
+  catalogVersion: number;
   user: UserProfile | null;
   login: (email: string, password: string) => Promise<void>;
   register: (name: string, email: string, password: string) => Promise<void>;
@@ -137,6 +138,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
   const [apiBaseUrl, setApiBaseUrlState] = useState<string>(() => getApiBaseUrl());
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
+  const [catalogVersion, setCatalogVersion] = useState<number>(0);
+  const lastSyncMsRef = useRef<number>(0);
 
   const [user, setUser] = useState<UserProfile | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -242,16 +245,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         apiRequest<{ categories: Category[] }>('/api/categories'),
         apiRequest<{ series: SeriesItem[] }>('/api/series'),
         apiRequest<{ notifications: NotificationItem[] }>('/api/notifications'),
-        apiRequest<{ items: ContentItem[] }>('/api/content?limit=200'),
+        apiRequest<{ items: ContentItem[] }>('/api/content?limit=500'),
       ]);
+      lastSyncMsRef.current = Date.now();
       setCategories(catRes.categories || []);
       setSeriesList(serRes.series || []);
       setNotifications(notifRes.notifications || []);
       setLastSyncedAt(new Date().toISOString());
+      setCatalogVersion((v) => v + 1);
 
       const publishedMap = new Map<string, ContentItem>(
         (catalogRes.items || []).map((item) => [item.id, item])
       );
+
+      setSelectedContent((prev) => (prev ? publishedMap.get(prev.id) || null : null));
 
       setFavoriteItems((prev) => {
         const next = prev
@@ -296,6 +303,38 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     refreshCatalogMeta();
   }, [refreshCatalogMeta]);
+
+  // Re-fetch fresh data from the web app on reconnect, tab foregrounding, and periodic section switches
+  useEffect(() => {
+    if (isOnline) {
+      refreshCatalogMeta();
+    }
+  }, [isOnline, refreshCatalogMeta]);
+
+  useEffect(() => {
+    const syncIfStale = () => {
+      if (document.visibilityState === 'visible' && navigator.onLine && Date.now() - lastSyncMsRef.current > 12000) {
+        refreshCatalogMeta();
+      }
+    };
+    const onFocus = () => {
+      if (navigator.onLine && Date.now() - lastSyncMsRef.current > 12000) {
+        refreshCatalogMeta();
+      }
+    };
+    document.addEventListener('visibilitychange', syncIfStale);
+    window.addEventListener('focus', onFocus);
+    return () => {
+      document.removeEventListener('visibilitychange', syncIfStale);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [refreshCatalogMeta]);
+
+  useEffect(() => {
+    if (isOnline && Date.now() - lastSyncMsRef.current > 15000) {
+      refreshCatalogMeta();
+    }
+  }, [section, isOnline, refreshCatalogMeta]);
 
   const updateApiBaseUrl = useCallback(
     async (url: string) => {
@@ -659,6 +698,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         apiBaseUrl,
         updateApiBaseUrl,
         lastSyncedAt,
+        catalogVersion,
         user,
         login,
         register,

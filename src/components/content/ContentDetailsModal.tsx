@@ -46,7 +46,7 @@ export const ContentDetailsModal: React.FC = () => {
         aria-modal="true"
         aria-label={title}
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-t-3xl sm:rounded-2xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-[#131C1A] shadow-2xl"
+        className="w-full max-w-2xl max-h-[90dvh] overflow-y-auto overflow-x-hidden rounded-t-3xl sm:rounded-2xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-[#131C1A] shadow-2xl"
       >
         {/* Header Bar */}
         <div className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-slate-100 bg-white/95 px-5 py-4 backdrop-blur-md dark:border-slate-800 dark:bg-[#131C1A]/95">

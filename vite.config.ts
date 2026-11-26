@@ -62,6 +62,7 @@ export default defineConfig(() => {
         },
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,jpg,jpeg,woff,woff2}'],
+          navigateFallbackDenylist: [/^\/api\//],
           runtimeCaching: [
             {
               urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
@@ -92,19 +93,8 @@ export default defineConfig(() => {
               },
             },
             {
-              urlPattern: /\/api\/(content|categories|series|qa|notifications).*/i,
-              handler: 'NetworkFirst',
-              options: {
-                cacheName: 'minaratul-huda-api-cache',
-                networkTimeoutSeconds: 4,
-                expiration: {
-                  maxEntries: 80,
-                  maxAgeSeconds: 60 * 60 * 24 * 7,
-                },
-                cacheableResponse: {
-                  statuses: [0, 200],
-                },
-              },
+              urlPattern: /\/api\/.*/i,
+              handler: 'NetworkOnly',
             },
           ],
         },

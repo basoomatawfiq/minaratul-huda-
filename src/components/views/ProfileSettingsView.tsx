@@ -65,30 +65,30 @@ export const ProfileView: React.FC = () => {
       </div>
 
       {/* Personal Stats Summary */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-3 gap-2 sm:gap-3">
         <button
           type="button"
           onClick={() => setSection('favorites')}
-          className="rounded-2xl border border-slate-200 bg-white p-4 text-start dark:border-slate-800 dark:bg-[#131C1A] cursor-pointer"
+          className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 text-start dark:border-slate-800 dark:bg-[#131C1A] cursor-pointer min-w-0"
         >
-          <p className="text-2xl font-bold text-slate-900 dark:text-slate-100 tabular-nums">{favoriteItems.length}</p>
-          <p className="text-xs text-slate-500">{t(language, 'favorites')}</p>
+          <p className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-slate-100 tabular-nums">{favoriteItems.length}</p>
+          <p className="text-xs text-slate-500 truncate">{t(language, 'favorites')}</p>
         </button>
         <button
           type="button"
           onClick={() => setSection('history')}
-          className="rounded-2xl border border-slate-200 bg-white p-4 text-start dark:border-slate-800 dark:bg-[#131C1A] cursor-pointer"
+          className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 text-start dark:border-slate-800 dark:bg-[#131C1A] cursor-pointer min-w-0"
         >
-          <p className="text-2xl font-bold text-slate-900 dark:text-slate-100 tabular-nums">{listeningHistory.length}</p>
-          <p className="text-xs text-slate-500">{t(language, 'history')}</p>
+          <p className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-slate-100 tabular-nums">{listeningHistory.length}</p>
+          <p className="text-xs text-slate-500 truncate">{t(language, 'history')}</p>
         </button>
         <button
           type="button"
           onClick={() => setSection('downloads')}
-          className="rounded-2xl border border-slate-200 bg-white p-4 text-start dark:border-slate-800 dark:bg-[#131C1A] cursor-pointer"
+          className="rounded-2xl border border-slate-200 bg-white p-3 sm:p-4 text-start dark:border-slate-800 dark:bg-[#131C1A] cursor-pointer min-w-0"
         >
-          <p className="text-2xl font-bold text-slate-900 dark:text-slate-100 tabular-nums">{offlineRecords.length}</p>
-          <p className="text-xs text-slate-500">{t(language, 'downloads')}</p>
+          <p className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-slate-100 tabular-nums">{offlineRecords.length}</p>
+          <p className="text-xs text-slate-500 truncate">{t(language, 'downloads')}</p>
         </button>
       </div>
 
@@ -283,7 +283,7 @@ export const SettingsView: React.FC = () => {
           <Globe className="w-4 h-4 text-emerald-700 dark:text-emerald-400" />
           <h2>{t(language, 'language')}</h2>
         </div>
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
           {(
             [
               { id: 'en', label: 'English (LTR)' },
@@ -295,7 +295,7 @@ export const SettingsView: React.FC = () => {
               key={opt.id}
               type="button"
               onClick={() => setLanguage(opt.id)}
-              className={`min-h-[44px] rounded-xl border px-3 py-2 text-xs sm:text-sm font-medium transition-colors cursor-pointer ${
+              className={`min-h-[44px] rounded-xl border px-3 py-2 text-xs sm:text-sm font-medium transition-colors truncate cursor-pointer ${
                 language === opt.id
                   ? 'border-[#0F4C3A] bg-[#0F4C3A] text-white dark:border-emerald-500 dark:bg-emerald-600'
                   : 'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200'
@@ -319,7 +319,7 @@ export const SettingsView: React.FC = () => {
               key={mode}
               type="button"
               onClick={() => setTheme(mode)}
-              className={`min-h-[44px] rounded-xl border px-3 py-2 text-xs sm:text-sm font-medium transition-colors cursor-pointer ${
+              className={`min-h-[44px] rounded-xl border px-2 sm:px-3 py-2 text-xs sm:text-sm font-medium transition-colors truncate cursor-pointer ${
                 theme === mode
                   ? 'border-[#0F4C3A] bg-[#0F4C3A] text-white dark:border-emerald-500 dark:bg-emerald-600'
                   : 'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200'

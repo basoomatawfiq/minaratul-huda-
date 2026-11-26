@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Search as SearchIcon } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { t } from '../../i18n/translations';
@@ -16,7 +16,10 @@ const GROUP_ORDER: { slug: string; label: string }[] = [
 ];
 
 export const SearchView: React.FC = () => {
-  const { language, offlineRecords } = useApp();
+  const { language, offlineRecords, apiBaseUrl, isOnline, catalogVersion } = useApp();
+  const offlineRecordsRef = useRef(offlineRecords);
+  offlineRecordsRef.current = offlineRecords;
+
   const [query, setQuery] = useState('');
   const [mediaFilter, setMediaFilter] = useState('all');
   const [sort, setSort] = useState('relevance');
@@ -41,7 +44,7 @@ export const SearchView: React.FC = () => {
     } catch {
       // Offline local search over downloaded records
       const needle = query.trim().toLowerCase();
-      const matched = offlineRecords
+      const matched = offlineRecordsRef.current
         .map((r) => r.itemSnapshot)
         .filter((item) => {
           if (!needle) return true;
@@ -64,14 +67,14 @@ export const SearchView: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [query, mediaFilter, sort, offlineRecords]);
+  }, [query, mediaFilter, sort]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       runSearch();
     }, 220);
     return () => window.clearTimeout(timer);
-  }, [runSearch]);
+  }, [runSearch, apiBaseUrl, isOnline, catalogVersion]);
 
   return (
     <div className="space-y-6">
@@ -98,26 +101,28 @@ export const SearchView: React.FC = () => {
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-1 rounded-xl bg-slate-200/60 p-1 dark:bg-slate-800/80">
-            {[
-              { id: 'all', label: 'All' },
-              { id: 'audio', label: 'Audio' },
-              { id: 'document', label: 'PDF' },
-              { id: 'transcript', label: 'Transcript' },
-            ].map((f) => (
-              <button
-                key={f.id}
-                type="button"
-                onClick={() => setMediaFilter(f.id)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors cursor-pointer ${
-                  mediaFilter === f.id
-                    ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-700 dark:text-white'
-                    : 'text-slate-600 dark:text-slate-300'
-                }`}
-              >
-                {f.label}
-              </button>
-            ))}
+          <div className="max-w-full overflow-x-auto no-scrollbar rounded-xl bg-slate-200/60 p-1 dark:bg-slate-800/80">
+            <div className="flex items-center gap-1 w-max">
+              {[
+                { id: 'all', label: 'All' },
+                { id: 'audio', label: 'Audio' },
+                { id: 'document', label: 'PDF' },
+                { id: 'transcript', label: 'Transcript' },
+              ].map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  onClick={() => setMediaFilter(f.id)}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                    mediaFilter === f.id
+                      ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-700 dark:text-white'
+                      : 'text-slate-600 dark:text-slate-300'
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
           </div>
 
           <div className="flex items-center gap-3">

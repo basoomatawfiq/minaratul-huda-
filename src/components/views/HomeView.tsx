@@ -25,6 +25,8 @@ export const HomeView: React.FC = () => {
     language,
     setSection,
     isOnline,
+    apiBaseUrl,
+    catalogVersion,
     listeningHistory,
     favoriteItems,
     offlineRecords,
@@ -84,11 +86,12 @@ export const HomeView: React.FC = () => {
 
   useEffect(() => {
     fetchHomeData(1, false);
-  }, [fetchHomeData]);
+  }, [fetchHomeData, apiBaseUrl, isOnline, catalogVersion]);
 
-  // When offline and remote fetch failed, derive items from downloaded snapshots
+  // Only fall back to downloaded snapshots when offline or when remote fetch failed
   const offlineFallbackItems = offlineRecords.map((r) => r.itemSnapshot);
-  const displayItems = recentItems.length > 0 ? recentItems : offlineFallbackItems;
+  const displayItems =
+    recentItems.length > 0 ? recentItems : !isOnline || error ? offlineFallbackItems : [];
   const heroItem = featured[0] || displayItems[0];
 
   const sectionTiles: { id: AppSection; label: string; subtitle: string; icon: React.ReactNode }[] = [
@@ -105,12 +108,12 @@ export const HomeView: React.FC = () => {
       {/* Editorial Hero Split */}
       <section className="relative overflow-hidden rounded-3xl border border-slate-200 dark:border-slate-800 bg-emerald-950">
         <div className="grid grid-cols-1 lg:grid-cols-12 items-stretch">
-          <div className="lg:col-span-7 p-6 sm:p-10 flex flex-col justify-between bg-gradient-to-br from-[#0F4C3A] via-[#0C3D2F] to-[#082920] text-white">
+          <div className="lg:col-span-7 p-5 sm:p-8 lg:p-10 flex flex-col justify-between bg-gradient-to-br from-[#0F4C3A] via-[#0C3D2F] to-[#082920] text-white min-w-0">
             <div>
               <p className="text-xs font-medium tracking-wide text-amber-300">
                 {t(language, 'brandFull')}
               </p>
-              <h1 className="mt-2 font-display text-2xl sm:text-4xl font-bold leading-tight text-balance">
+              <h1 className="mt-2 font-display text-2xl sm:text-3xl lg:text-4xl font-bold leading-tight text-balance">
                 {t(language, 'tagline')}
               </h1>
               <p className="mt-3 max-w-xl text-sm sm:text-base text-emerald-100/90 leading-relaxed">

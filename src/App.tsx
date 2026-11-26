@@ -81,16 +81,16 @@ const MainShell: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen flex bg-[#F8F8F6] text-slate-900 dark:bg-[#0B1110] dark:text-slate-100">
-      {/* Desktop Sidebar (260px) */}
+    <div className="min-h-[100dvh] w-full flex bg-[#F8F8F6] text-slate-900 dark:bg-[#0B1110] dark:text-slate-100">
+      {/* Desktop Sidebar (256px) */}
       <aside className="hidden lg:flex lg:w-64 lg:flex-col lg:fixed lg:inset-y-0 border-e border-slate-200 bg-white dark:border-slate-800 dark:bg-[#101816]">
         <div className="flex items-center gap-3 px-5 h-16 border-b border-slate-100 dark:border-slate-800">
           <img
             src="/assets/aistudio/WhatsApp_Image_2026-11-25_at_03.55.32_835749e8.jpeg"
             alt="Minaratul Huda Logo"
-            className="h-9 w-9 rounded-xl object-cover border border-slate-200 dark:border-slate-700"
+            className="h-9 w-9 rounded-xl object-cover border border-slate-200 dark:border-slate-700 shrink-0"
           />
-          <span className="font-display text-lg font-bold tracking-tight text-slate-900 dark:text-white whitespace-nowrap">
+          <span className="font-display text-lg font-bold tracking-tight text-slate-900 dark:text-white whitespace-nowrap truncate">
             {t(language, 'brand')}
           </span>
         </div>
@@ -131,22 +131,22 @@ const MainShell: React.FC = () => {
       </aside>
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col lg:ps-64 min-w-0">
+      <div className="flex-1 flex flex-col lg:ps-64 min-w-0 w-full">
         {/* Top Bar Contract: 3-Zone Header */}
-        <header className="sticky top-0 z-30 h-14 lg:h-16 border-b border-slate-200 bg-white/90 backdrop-blur-md dark:border-slate-800 dark:bg-[#101816]/90">
-          <div className="mx-auto flex h-full max-w-6xl items-center justify-between gap-8 px-4 sm:px-6">
+        <header className="sticky top-0 z-30 h-12 sm:h-14 lg:h-16 pt-[env(safe-area-inset-top)] border-b border-slate-200 bg-white/90 backdrop-blur-md dark:border-slate-800 dark:bg-[#101816]/90">
+          <div className="mx-auto flex h-full w-full max-w-6xl items-center justify-between gap-2 sm:gap-4 lg:gap-8 px-3 sm:px-6">
             {/* Zone 1: Brand Wordmark */}
             <button
               type="button"
               onClick={() => navigate('home')}
-              className="flex items-center gap-2.5 lg:hidden font-display text-lg font-bold tracking-tight text-slate-900 dark:text-white whitespace-nowrap shrink-0 cursor-pointer"
+              className="flex items-center gap-2 lg:hidden font-display text-base sm:text-lg font-bold tracking-tight text-slate-900 dark:text-white min-w-0 cursor-pointer"
             >
               <img
                 src="/assets/aistudio/WhatsApp_Image_2026-11-25_at_03.55.32_835749e8.jpeg"
                 alt="Minaratul Huda Logo"
-                className="h-8 w-8 rounded-lg object-cover border border-slate-200 dark:border-slate-700"
+                className="h-7 w-7 sm:h-8 sm:w-8 rounded-lg object-cover border border-slate-200 dark:border-slate-700 shrink-0"
               />
-              <span>{t(language, 'brand')}</span>
+              <span className="truncate">{t(language, 'brand')}</span>
             </button>
 
             <span className="hidden lg:block font-display text-base font-semibold text-slate-900 dark:text-white whitespace-nowrap shrink-0">
@@ -154,7 +154,7 @@ const MainShell: React.FC = () => {
             </span>
 
             {/* Zone 2: 4 Concise Single-Line Nav Links */}
-            <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-600 dark:text-slate-300">
+            <nav className="hidden md:flex items-center gap-5 lg:gap-6 text-sm font-medium text-slate-600 dark:text-slate-300">
               {(['tafseer', 'hadith', 'speeches', 'qa'] as AppSection[]).map((id) => (
                 <button
                   key={id}
@@ -170,20 +170,20 @@ const MainShell: React.FC = () => {
             </nav>
 
             {/* Zone 3: 1 Primary Action */}
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
               <button
                 type="button"
                 onClick={() => navigate('search')}
-                className="inline-flex items-center gap-2 min-h-[40px] rounded-xl bg-[#0F4C3A] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#0B3B2D] dark:bg-emerald-600 whitespace-nowrap shrink-0 cursor-pointer"
+                className="inline-flex items-center gap-1.5 min-h-[36px] sm:min-h-[40px] rounded-xl bg-[#0F4C3A] px-3 py-1.5 sm:px-3.5 sm:py-2 text-xs font-semibold text-white hover:bg-[#0B3B2D] dark:bg-emerald-600 whitespace-nowrap shrink-0 cursor-pointer"
               >
-                <Search className="w-3.5 h-3.5" />
+                <Search className="w-3.5 h-3.5 shrink-0" />
                 <span>{t(language, 'search')}</span>
               </button>
               <button
                 type="button"
                 onClick={() => setMobileMenuOpen(true)}
                 aria-label="Open menu"
-                className="lg:hidden min-h-[40px] min-w-[40px] inline-flex items-center justify-center rounded-xl border border-slate-200 text-slate-700 dark:border-slate-700 dark:text-slate-200 cursor-pointer"
+                className="lg:hidden min-h-[38px] min-w-[38px] sm:min-h-[40px] sm:min-w-[40px] inline-flex items-center justify-center rounded-xl border border-slate-200 text-slate-700 dark:border-slate-700 dark:text-slate-200 cursor-pointer"
               >
                 <Menu className="w-5 h-5" />
               </button>
@@ -200,7 +200,7 @@ const MainShell: React.FC = () => {
         )}
 
         {/* Active Page Viewport */}
-        <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 sm:px-6 lg:py-8 pb-32 lg:pb-16">
+        <main className="mx-auto w-full max-w-6xl flex-1 min-w-0 px-3 sm:px-6 py-4 sm:py-6 lg:py-8 pb-[calc(8.5rem+env(safe-area-inset-bottom))] lg:pb-24">
           {section === 'home' && <HomeView />}
           {section === 'tafseer' && (
             <CategoryBrowseView
@@ -250,7 +250,7 @@ const MainShell: React.FC = () => {
       {/* Mobile Fixed Bottom Tab Bar (Thumb Zone) */}
       <nav
         aria-label="Mobile bottom navigation"
-        className="lg:hidden fixed bottom-0 left-0 right-0 z-30 h-16 border-t border-slate-200 bg-white/95 backdrop-blur-md dark:border-slate-800 dark:bg-[#101816]/95 grid grid-cols-5 items-center"
+        className="lg:hidden fixed bottom-0 left-0 right-0 z-30 h-[calc(3.5rem+env(safe-area-inset-bottom))] pb-[env(safe-area-inset-bottom)] border-t border-slate-200 bg-white/95 backdrop-blur-md dark:border-slate-800 dark:bg-[#101816]/95 grid grid-cols-5 items-center"
       >
         {[
           { id: 'home' as AppSection, label: t(language, 'home'), icon: <Home className="w-5 h-5" /> },
@@ -265,12 +265,12 @@ const MainShell: React.FC = () => {
               key={tab.id}
               type="button"
               onClick={() => navigate(tab.id)}
-              className={`flex flex-col items-center justify-center h-full gap-1 cursor-pointer ${
+              className={`flex flex-col items-center justify-center h-full gap-0.5 min-w-0 px-1 cursor-pointer ${
                 active ? 'text-[#0F4C3A] dark:text-emerald-400 font-semibold' : 'text-slate-500 dark:text-slate-400'
               }`}
             >
               {tab.icon}
-              <span className="text-[10px] tracking-tight truncate max-w-[68px]">{tab.label}</span>
+              <span className="text-[10px] tracking-tight truncate max-w-full">{tab.label}</span>
             </button>
           );
         })}
@@ -284,7 +284,7 @@ const MainShell: React.FC = () => {
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="w-80 max-w-[85vw] h-full bg-white dark:bg-[#101816] p-5 overflow-y-auto flex flex-col justify-between"
+            className="w-80 max-w-[85vw] h-[100dvh] bg-white dark:bg-[#101816] p-5 overflow-y-auto flex flex-col justify-between"
           >
             <div>
               <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800">

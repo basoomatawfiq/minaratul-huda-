@@ -145,9 +145,9 @@ export const UniversalReader: React.FC = () => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-[#F8F8F6] dark:bg-[#0B1110]">
+    <div className="fixed inset-0 h-[100dvh] w-full z-50 flex flex-col overflow-hidden bg-[#F8F8F6] dark:bg-[#0B1110]">
       {/* Reader Top Toolbar */}
-      <header className="border-b border-slate-200 bg-white/95 px-4 py-3 backdrop-blur-md dark:border-slate-800 dark:bg-[#131C1A]/95">
+      <header className="border-b border-slate-200 bg-white/95 px-3 sm:px-4 py-3 backdrop-blur-md dark:border-slate-800 dark:bg-[#131C1A]/95 shrink-0">
         <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-between gap-3">
           <div className="min-w-0 flex-1">
             <p className="text-xs font-medium text-emerald-800 dark:text-emerald-400 truncate">
@@ -252,15 +252,15 @@ export const UniversalReader: React.FC = () => {
               )}
             </div>
 
-            <div className="flex items-center gap-2">
-              <div className="relative">
+            <div className="flex items-center gap-2 w-full sm:w-auto min-w-0">
+              <div className="relative flex-1 min-w-0 sm:flex-none">
                 <Search className="w-3.5 h-3.5 text-slate-400 absolute start-2.5 top-1/2 -translate-y-1/2" />
                 <input
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Find in text..."
-                  className="w-40 sm:w-52 rounded-lg border border-slate-200 bg-slate-50 ps-8 pe-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-emerald-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                  className="w-full sm:w-52 rounded-lg border border-slate-200 bg-slate-50 ps-8 pe-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-emerald-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
                 />
               </div>
 
@@ -309,8 +309,8 @@ export const UniversalReader: React.FC = () => {
           </article>
         </div>
       ) : (
-        <div className="flex-1 flex flex-col p-4 sm:p-6 mx-auto w-full max-w-5xl">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex-1 min-h-0 flex flex-col p-3 sm:p-6 mx-auto w-full max-w-5xl">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 shrink-0">
             <span className="text-xs font-medium text-slate-600 dark:text-slate-300">
               {item.document?.documentType || 'PDF Document'}
               {pdfOffline ? ' · Loaded from Offline Storage' : ''}
@@ -335,7 +335,7 @@ export const UniversalReader: React.FC = () => {
             <iframe
               title={title}
               src={pdfSrc}
-              className="flex-1 w-full min-h-[68vh] rounded-2xl border border-slate-200 bg-white dark:border-slate-800"
+              className="flex-1 min-h-0 w-full rounded-2xl border border-slate-200 bg-white dark:border-slate-800"
             />
           ) : (
             <div className="flex-1 flex flex-col items-center justify-center rounded-2xl border border-slate-200 bg-white p-8 text-center dark:border-slate-800 dark:bg-[#131C1A]">

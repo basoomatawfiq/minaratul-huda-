@@ -41,12 +41,12 @@ export const ContentCard: React.FC<ContentCardProps> = ({ item, queue, compact }
   return (
     <article
       onClick={() => openContentDetails(item)}
-      className="group flex flex-col justify-between rounded-2xl border border-slate-200/90 bg-white p-4 sm:p-5 transition-colors hover:border-emerald-700/40 dark:border-slate-800 dark:bg-[#131C1A] dark:hover:border-emerald-600/40 cursor-pointer"
+      className="group min-w-0 flex flex-col justify-between rounded-2xl border border-slate-200/90 bg-white p-4 sm:p-5 transition-colors hover:border-emerald-700/40 dark:border-slate-800 dark:bg-[#131C1A] dark:hover:border-emerald-600/40 cursor-pointer"
     >
       <div>
-        <div className="flex items-start gap-4">
+        <div className="flex items-start gap-3 sm:gap-4">
           {/* Cover Thumbnail with Zero-Broken-Image fallback */}
-          <div className="relative h-20 w-20 sm:h-24 sm:w-24 shrink-0 overflow-hidden rounded-xl border border-slate-200/70 bg-emerald-950/5 dark:border-slate-800 dark:bg-emerald-950/40">
+          <div className="relative h-16 w-16 sm:h-24 sm:w-24 shrink-0 overflow-hidden rounded-xl border border-slate-200/70 bg-emerald-950/5 dark:border-slate-800 dark:bg-emerald-950/40">
             {item.coverImage && !imgError ? (
               <img
                 src={resolveMediaUrl(item.coverImage)}

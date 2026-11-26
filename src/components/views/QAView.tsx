@@ -7,7 +7,7 @@ import type { ContentItem, QASubmission } from '../../types/content';
 import { ContentCard } from '../content/ContentCard';
 
 export const QAView: React.FC = () => {
-  const { language, user, setSection, showToast } = useApp();
+  const { language, user, setSection, showToast, offlineRecords, apiBaseUrl, isOnline, catalogVersion } = useApp();
   const [qaContent, setQaContent] = useState<ContentItem[]>([]);
   const [myQuestions, setMyQuestions] = useState<QASubmission[]>([]);
   const [topic, setTopic] = useState('Fiqh of Worship');
@@ -25,15 +25,18 @@ export const QAView: React.FC = () => {
         setMyQuestions(myRes.items || []);
       }
     } catch {
-      // handled gracefully
+      const offline = offlineRecords
+        .map((r) => r.itemSnapshot)
+        .filter((i) => i.categorySlug === 'qa');
+      setQaContent(Array.from(new Map(offline.map((i) => [i.id, i])).values()));
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, [user, offlineRecords]);
 
   useEffect(() => {
     loadQA();
-  }, [loadQA]);
+  }, [loadQA, apiBaseUrl, isOnline, catalogVersion]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

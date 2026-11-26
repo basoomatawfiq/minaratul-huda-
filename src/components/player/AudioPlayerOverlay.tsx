@@ -58,7 +58,7 @@ export const AudioPlayerOverlay: React.FC = () => {
     <>
       {/* Persistent Compact Mini Player */}
       {!isExpanded && (
-        <div className="fixed bottom-16 lg:bottom-4 left-2 right-2 lg:left-auto lg:right-6 lg:w-[420px] z-40 rounded-2xl border border-slate-200/90 bg-white/95 backdrop-blur-md shadow-lg dark:border-slate-800 dark:bg-[#131C1A]/95">
+        <div className="fixed bottom-[calc(3.85rem+env(safe-area-inset-bottom))] lg:bottom-4 left-2 right-2 lg:left-auto lg:right-6 lg:w-[420px] max-w-[calc(100vw-1rem)] z-40 rounded-2xl border border-slate-200/90 bg-white/95 backdrop-blur-md shadow-lg dark:border-slate-800 dark:bg-[#131C1A]/95">
           <div className="h-0.5 w-full bg-slate-100 dark:bg-slate-800 overflow-hidden rounded-t-2xl">
             <div
               className="h-full bg-[#0F4C3A] dark:bg-emerald-500 transition-[width] duration-150"
@@ -140,32 +140,32 @@ export const AudioPlayerOverlay: React.FC = () => {
 
       {/* Full-Screen Audio Player Modal */}
       {isExpanded && (
-        <div className="fixed inset-0 z-50 flex flex-col bg-[#F8F8F6] dark:bg-[#0B1110] overflow-y-auto">
-          <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-between p-5 sm:p-8">
+        <div className="fixed inset-0 h-[100dvh] w-full z-50 flex flex-col bg-[#F8F8F6] dark:bg-[#0B1110] overflow-y-auto">
+          <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col justify-between px-4 py-4 sm:p-8 pb-[max(1.25rem,env(safe-area-inset-bottom))]">
             {/* Top Controls */}
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <button
                 type="button"
                 onClick={() => setIsExpanded(false)}
-                className="min-h-[44px] inline-flex items-center gap-2 rounded-xl px-3 text-sm font-medium text-slate-600 hover:bg-slate-200/60 dark:text-slate-300 dark:hover:bg-slate-800 cursor-pointer"
+                className="min-h-[44px] inline-flex items-center gap-1.5 rounded-xl px-2.5 text-sm font-medium text-slate-600 hover:bg-slate-200/60 dark:text-slate-300 dark:hover:bg-slate-800 cursor-pointer shrink-0"
               >
                 <ChevronDown className="w-5 h-5" />
                 <span>Minimize</span>
               </button>
 
-              <div className="text-xs font-medium text-slate-500 dark:text-slate-400">
+              <div className="text-xs font-medium text-slate-500 dark:text-slate-400 truncate text-center">
                 {currentTrack.categoryName}
                 {isPlayingOffline ? ' · Playing Offline' : ''}
               </div>
 
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-1 shrink-0">
                 <FavoriteButton item={currentTrack} />
               </div>
             </div>
 
             {/* Artwork & Metadata */}
-            <div className="my-6 flex flex-col items-center text-center">
-              <div className="h-52 w-52 sm:h-64 sm:w-64 overflow-hidden rounded-3xl border border-slate-200 dark:border-slate-800 shadow-xl">
+            <div className="my-3 sm:my-6 flex flex-col items-center text-center">
+              <div className="h-40 w-40 sm:h-56 sm:w-56 md:h-64 md:w-64 overflow-hidden rounded-3xl border border-slate-200 dark:border-slate-800 shadow-xl">
                 {currentTrack.coverImage ? (
                   <img
                     src={resolveMediaUrl(currentTrack.coverImage)}
@@ -226,7 +226,7 @@ export const AudioPlayerOverlay: React.FC = () => {
                 </div>
               </div>
 
-              <div className="flex items-center justify-center gap-3 sm:gap-5">
+              <div className="flex items-center justify-center gap-1.5 sm:gap-5">
                 <button
                   type="button"
                   onClick={cycleRepeat}

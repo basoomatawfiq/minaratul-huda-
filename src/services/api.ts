@@ -77,8 +77,13 @@ export async function apiRequest<T = any>(
     throw new Error('Content Server URL is not configured. Open Settings to connect your server.');
   }
 
+  const method = (options.method || 'GET').toUpperCase();
   const headers = new Headers(options.headers || {});
-  if (!headers.has('Content-Type') && !(options.body instanceof FormData)) {
+  if (
+    !headers.has('Content-Type') &&
+    options.body !== undefined &&
+    !(options.body instanceof FormData)
+  ) {
     headers.set('Content-Type', 'application/json');
   }
   if (authTokenInMemory) {
@@ -88,6 +93,7 @@ export async function apiRequest<T = any>(
   const targetUrl = resolveApiUrl(path);
   const res = await fetch(targetUrl, {
     ...options,
+    cache: options.cache ?? (method === 'GET' ? 'no-store' : 'default'),
     headers,
   });
 
