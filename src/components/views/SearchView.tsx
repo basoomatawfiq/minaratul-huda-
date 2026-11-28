@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Search as SearchIcon } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { t } from '../../i18n/translations';
@@ -15,23 +15,89 @@ const GROUP_ORDER: { slug: string; label: string }[] = [
   { slug: 'documents', label: 'DOCUMENTS' },
 ];
 
+const LS_SEARCH_STATE = 'minaratul_huda_search_state_v1';
+
+function readSearchState(): { query: string; mediaFilter: string; sort: string } {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LS_SEARCH_STATE) || '{}');
+    return {
+      query: typeof saved.query === 'string' ? saved.query : '',
+      mediaFilter: typeof saved.mediaFilter === 'string' ? saved.mediaFilter : 'all',
+      sort: typeof saved.sort === 'string' ? saved.sort : 'relevance',
+    };
+  } catch {
+    return { query: '', mediaFilter: 'all', sort: 'relevance' };
+  }
+}
+
 export const SearchView: React.FC = () => {
-  const { language, offlineRecords, catalogItems, apiBaseUrl, isOnline, catalogVersion } = useApp();
+  const { language, offlineRecords, catalogItems, catalogLoading, apiBaseUrl, isOnline, catalogVersion } = useApp();
   const offlineRecordsRef = useRef(offlineRecords);
   offlineRecordsRef.current = offlineRecords;
-  const catalogItemsRef = useRef(catalogItems);
-  catalogItemsRef.current = catalogItems;
 
-  const [query, setQuery] = useState('');
-  const [mediaFilter, setMediaFilter] = useState('all');
-  const [sort, setSort] = useState('relevance');
-  const [grouped, setGrouped] = useState<Record<string, ContentItem[]>>({});
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
+  const initial = useMemo(() => readSearchState(), []);
+  const [query, setQuery] = useState(initial.query);
+  const [mediaFilter, setMediaFilter] = useState(initial.mediaFilter);
+  const [sort, setSort] = useState(initial.sort);
+  const [serverGrouped, setServerGrouped] = useState<Record<string, ContentItem[]> | null>(null);
+  const [serverTotal, setServerTotal] = useState(0);
+  const [fetching, setFetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_SEARCH_STATE, JSON.stringify({ query, mediaFilter, sort }));
+    } catch {
+      // ignore storage errors
+    }
+  }, [query, mediaFilter, sort]);
+
+  // Instant client-side search over synced/cached catalogItems (and offline fallback) for 0ms search UI
+  const instantSearch = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    const sourceItems =
+      catalogItems.length > 0
+        ? catalogItems
+        : offlineRecords.map((r) => r.itemSnapshot);
+
+    const matched = sourceItems.filter((item) => {
+      if (mediaFilter === 'audio' && !item.audio?.url) return false;
+      if (mediaFilter === 'document' && !item.document?.url) return false;
+      if (mediaFilter === 'transcript' && !item.transcript) return false;
+      if (!needle) return true;
+      return (
+        item.title.toLowerCase().includes(needle) ||
+        item.speaker.toLowerCase().includes(needle) ||
+        item.description.toLowerCase().includes(needle) ||
+        (item.seriesTitle || '').toLowerCase().includes(needle) ||
+        item.tags.some((tg) => tg.toLowerCase().includes(needle))
+      );
+    });
+    const unique = Array.from(new Map(matched.map((i) => [i.id, i])).values());
+    if (sort === 'newest') {
+      unique.sort((a, b) => (b.publishedAt || b.createdAt || '').localeCompare(a.publishedAt || a.createdAt || ''));
+    } else if (sort === 'popular') {
+      unique.sort((a, b) => (b.playCount || 0) - (a.playCount || 0));
+    }
+    const groupedMap: Record<string, ContentItem[]> = {};
+    for (const item of unique) {
+      const key = item.categorySlug || 'lectures';
+      groupedMap[key] = groupedMap[key] || [];
+      groupedMap[key].push(item);
+    }
+    return { grouped: groupedMap, total: unique.length };
+  }, [catalogItems, offlineRecords, query, mediaFilter, sort]);
+
   const runSearch = useCallback(async () => {
-    setLoading(true);
+    // If catalog has < 500 items already synced locally and we aren't filtering server relevance on a text query, no extra round-trip needed
+    if (catalogItems.length > 0 && catalogItems.length < 500 && !query.trim()) {
+      setServerGrouped(null);
+      setError(null);
+      setFetching(false);
+      return;
+    }
+
+    setFetching(true);
     setError(null);
     try {
       const params = new URLSearchParams({
@@ -43,51 +109,28 @@ export const SearchView: React.FC = () => {
       const res = await apiRequest<{ total: number; grouped: Record<string, ContentItem[]> }>(
         `/api/search?${params.toString()}`
       );
-      setGrouped(res.grouped || {});
-      setTotal(res.total || 0);
+      setServerGrouped(res.grouped || {});
+      setServerTotal(res.total || 0);
     } catch (err: any) {
-      // Local search over synced catalogItems first, then downloaded offline records
-      const needle = query.trim().toLowerCase();
-      const sourceItems =
-        catalogItemsRef.current.length > 0
-          ? catalogItemsRef.current
-          : offlineRecordsRef.current.map((r) => r.itemSnapshot);
-
-      const matched = sourceItems.filter((item) => {
-        if (mediaFilter === 'audio' && !item.audio?.url) return false;
-        if (mediaFilter === 'document' && !item.document?.url) return false;
-        if (mediaFilter === 'transcript' && !item.transcript) return false;
-        if (!needle) return true;
-        return (
-          item.title.toLowerCase().includes(needle) ||
-          item.speaker.toLowerCase().includes(needle) ||
-          item.description.toLowerCase().includes(needle) ||
-          item.tags.some((tg) => tg.toLowerCase().includes(needle))
-        );
-      });
-      const unique = Array.from(new Map(matched.map((i) => [i.id, i])).values());
-      const nextGrouped: Record<string, ContentItem[]> = {};
-      for (const item of unique) {
-        const key = item.categorySlug || 'lectures';
-        nextGrouped[key] = nextGrouped[key] || [];
-        nextGrouped[key].push(item);
-      }
-      setGrouped(nextGrouped);
-      setTotal(unique.length);
-      if (isOnline && unique.length === 0) {
+      setServerGrouped(null);
+      if (isOnline && instantSearch.total === 0) {
         setError(err?.message || 'Unable to search content server.');
       }
     } finally {
-      setLoading(false);
+      setFetching(false);
     }
-  }, [query, mediaFilter, sort, isOnline]);
+  }, [query, mediaFilter, sort, isOnline, catalogItems.length, instantSearch.total]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       runSearch();
-    }, 220);
+    }, 180);
     return () => window.clearTimeout(timer);
   }, [runSearch, apiBaseUrl, isOnline, catalogVersion]);
+
+  const grouped = serverGrouped !== null ? serverGrouped : instantSearch.grouped;
+  const total = serverGrouped !== null ? serverTotal : instantSearch.total;
+  const showSkeleton = (fetching || catalogLoading) && total === 0 && catalogItems.length === 0;
 
   return (
     <div className="space-y-6">
@@ -155,7 +198,7 @@ export const SearchView: React.FC = () => {
       </div>
 
       {/* Grouped Results */}
-      {loading ? (
+      {showSkeleton ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {[1, 2, 3, 4].map((n) => (
             <div key={n} className="h-40 animate-pulse rounded-2xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-[#131C1A]" />

@@ -455,7 +455,7 @@ export const SettingsView: React.FC = () => {
               disabled={syncing}
               onClick={async () => {
                 setSyncing(true);
-                await refreshCatalogMeta();
+                await refreshCatalogMeta(true);
                 setSyncing(false);
                 showToast('Synchronized library with content server.');
               }}

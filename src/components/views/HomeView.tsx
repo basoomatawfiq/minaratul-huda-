@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   ArrowRight,
   Bell,
@@ -15,7 +15,7 @@ import {
 import { useApp } from '../../context/AppContext';
 import { useAudio } from '../../context/AudioContext';
 import { getLocalizedTitle, t } from '../../i18n/translations';
-import { APP_LOGO_PATH, apiRequest, getApiBaseUrl, resolveMediaUrl } from '../../services/api';
+import { APP_LOGO_PATH, getApiBaseUrl, resolveMediaUrl } from '../../services/api';
 import { formatDuration } from '../../services/offlineManager';
 import type { AppSection, ContentItem } from '../../types/content';
 import { ContentCard } from '../content/ContentCard';
@@ -25,9 +25,8 @@ export const HomeView: React.FC = () => {
     language,
     setSection,
     isOnline,
-    apiBaseUrl,
-    catalogVersion,
     catalogItems,
+    catalogLoading,
     catalogError,
     listeningHistory,
     favoriteItems,
@@ -38,73 +37,25 @@ export const HomeView: React.FC = () => {
   } = useApp();
   const { playItem } = useAudio();
 
-  const [featured, setFeatured] = useState<ContentItem[]>([]);
-  const [recentItems, setRecentItems] = useState<ContentItem[]>([]);
-  const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [visibleCount, setVisibleCount] = useState(12);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const fetchHomeData = useCallback(async (pageNum = 1, append = false) => {
-    if (!getApiBaseUrl()) {
-      setFeatured([]);
-      setRecentItems([]);
-      setLoading(false);
-      setLoadingMore(false);
-      setError(null);
-      return;
-    }
+  // Use freshly synced (or instant SWR cached) catalog items with zero duplicate boot requests
+  const offlineFallbackItems = useMemo(() => offlineRecords.map((r) => r.itemSnapshot), [offlineRecords]);
+  const displayItems: ContentItem[] =
+    catalogItems.length > 0
+      ? catalogItems
+      : !isOnline || catalogError
+        ? offlineFallbackItems
+        : [];
+  const visibleItems = displayItems.slice(0, visibleCount);
+  const heroItem = displayItems.find((i) => i.featured) || displayItems[0];
 
-    if (pageNum === 1) setLoading(true);
-    else setLoadingMore(true);
-    setError(null);
-
-    try {
-      const [featSettled, recSettled] = await Promise.allSettled([
-        pageNum === 1
-          ? apiRequest<{ items: ContentItem[] }>('/api/content?featured=true&limit=3')
-          : Promise.resolve(null),
-        apiRequest<{ items: ContentItem[]; pagination: { totalPages: number } }>(
-          `/api/content?page=${pageNum}&limit=6`
-        ),
-      ]);
-
-      if (featSettled.status === 'fulfilled' && featSettled.value) {
-        setFeatured(featSettled.value.items || []);
-      }
-
-      if (recSettled.status === 'fulfilled') {
-        const recRes = recSettled.value;
-        if (append) {
-          setRecentItems((prev) => [...prev, ...(recRes.items || [])]);
-        } else {
-          setRecentItems(recRes.items || []);
-        }
-        setPage(pageNum);
-        setTotalPages(recRes.pagination?.totalPages || 1);
-      } else {
-        throw recSettled.reason;
-      }
-    } catch (err: any) {
-      setError(err?.message || 'Unable to load latest teachings.');
-    } finally {
-      setLoading(false);
-      setLoadingMore(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchHomeData(1, false);
-  }, [fetchHomeData, apiBaseUrl, isOnline, catalogVersion]);
-
-  // Only fall back to downloaded snapshots when offline or when remote fetch failed
-  const offlineFallbackItems = offlineRecords.map((r) => r.itemSnapshot);
-  const remoteItems = recentItems.length > 0 ? recentItems : catalogItems;
-  const effectiveError = remoteItems.length > 0 ? null : error || catalogError;
-  const displayItems =
-    remoteItems.length > 0 ? remoteItems : !isOnline || effectiveError ? offlineFallbackItems : [];
-  const heroItem = featured[0] || displayItems.find((i) => i.featured) || displayItems[0];
+  const handleManualRefresh = async () => {
+    setRefreshing(true);
+    await refreshCatalogMeta(true);
+    setRefreshing(false);
+  };
 
   const sectionTiles: { id: AppSection; label: string; subtitle: string; icon: React.ReactNode }[] = [
     { id: 'tafseer', label: t(language, 'tafseer'), subtitle: 'Surah-by-Surah Exegesis', icon: <BookOpen className="w-5 h-5" /> },
@@ -161,14 +112,11 @@ export const HomeView: React.FC = () => {
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  refreshCatalogMeta();
-                  fetchHomeData(1, false);
-                }}
+                onClick={handleManualRefresh}
                 aria-label={t(language, 'pullToRefresh')}
                 className="inline-flex items-center gap-1.5 min-h-[44px] rounded-xl border border-white/20 px-3.5 py-2 text-xs font-medium text-emerald-100 hover:bg-white/10 transition-colors cursor-pointer"
               >
-                <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`w-3.5 h-3.5 ${refreshing || (catalogLoading && displayItems.length === 0) ? 'animate-spin' : ''}`} />
                 <span>{t(language, 'pullToRefresh')}</span>
               </button>
             </div>
@@ -321,7 +269,7 @@ export const HomeView: React.FC = () => {
           </h2>
         </div>
 
-        {loading && displayItems.length === 0 ? (
+        {catalogLoading && displayItems.length === 0 ? (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {[1, 2, 3, 4].map((n) => (
               <div
@@ -330,15 +278,12 @@ export const HomeView: React.FC = () => {
               />
             ))}
           </div>
-        ) : effectiveError && displayItems.length === 0 ? (
+        ) : catalogError && displayItems.length === 0 ? (
           <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-center dark:border-amber-900/60 dark:bg-amber-950/30">
-            <p className="text-sm text-amber-900 dark:text-amber-200">{effectiveError}</p>
+            <p className="text-sm text-amber-900 dark:text-amber-200">{catalogError}</p>
             <button
               type="button"
-              onClick={() => {
-                refreshCatalogMeta();
-                fetchHomeData(1, false);
-              }}
+              onClick={handleManualRefresh}
               className="mt-3 min-h-[40px] rounded-xl bg-amber-800 px-4 py-2 text-xs font-medium text-white cursor-pointer"
             >
               Retry
@@ -357,10 +302,7 @@ export const HomeView: React.FC = () => {
             <div className="flex flex-wrap items-center justify-center gap-3 pt-1">
               <button
                 type="button"
-                onClick={() => {
-                  refreshCatalogMeta();
-                  fetchHomeData(1, false);
-                }}
+                onClick={handleManualRefresh}
                 className="inline-flex items-center gap-2 min-h-[40px] rounded-xl bg-[#0F4C3A] px-4 py-2 text-xs font-semibold text-white hover:bg-[#0B3B2D] dark:bg-emerald-600 cursor-pointer"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
@@ -380,20 +322,19 @@ export const HomeView: React.FC = () => {
         ) : (
           <>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {displayItems.map((item) => (
+              {visibleItems.map((item) => (
                 <ContentCard key={item.id} item={item} queue={displayItems} />
               ))}
             </div>
 
-            {page < totalPages && isOnline && (
+            {visibleCount < displayItems.length && (
               <div className="mt-6 flex justify-center">
                 <button
                   type="button"
-                  disabled={loadingMore}
-                  onClick={() => fetchHomeData(page + 1, true)}
-                  className="min-h-[44px] rounded-xl border border-slate-200 bg-white px-6 py-2.5 text-sm font-medium text-slate-800 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 cursor-pointer"
+                  onClick={() => setVisibleCount((c) => c + 12)}
+                  className="min-h-[44px] rounded-xl border border-slate-200 bg-white px-6 py-2.5 text-sm font-medium text-slate-800 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 cursor-pointer"
                 >
-                  {loadingMore ? 'Loading...' : t(language, 'loadMore')}
+                  {t(language, 'loadMore')}
                 </button>
               </div>
             )}

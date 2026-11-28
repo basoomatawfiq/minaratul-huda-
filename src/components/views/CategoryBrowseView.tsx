@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Layers, RefreshCw } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { t } from '../../i18n/translations';
@@ -12,6 +12,44 @@ interface CategoryBrowseViewProps {
   subtitle: string;
 }
 
+const LS_CATEGORY_FILTERS = 'minaratul_huda_category_filters_v1';
+
+interface CategoryFilterState {
+  selectedSeriesId: string;
+  mediaFilter: 'all' | 'audio' | 'document' | 'transcript';
+  sort: 'newest' | 'popular' | 'episode';
+}
+
+function readCategoryFilter(slug: string): CategoryFilterState {
+  try {
+    const all = JSON.parse(localStorage.getItem(LS_CATEGORY_FILTERS) || '{}');
+    const saved = all?.[slug];
+    if (saved) {
+      return {
+        selectedSeriesId: typeof saved.selectedSeriesId === 'string' ? saved.selectedSeriesId : '',
+        mediaFilter:
+          saved.mediaFilter === 'audio' || saved.mediaFilter === 'document' || saved.mediaFilter === 'transcript'
+            ? saved.mediaFilter
+            : 'all',
+        sort: saved.sort === 'popular' || saved.sort === 'episode' ? saved.sort : 'newest',
+      };
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return { selectedSeriesId: '', mediaFilter: 'all', sort: 'newest' };
+}
+
+function writeCategoryFilter(slug: string, state: CategoryFilterState) {
+  try {
+    const all = JSON.parse(localStorage.getItem(LS_CATEGORY_FILTERS) || '{}');
+    all[slug] = state;
+    localStorage.setItem(LS_CATEGORY_FILTERS, JSON.stringify(all));
+  } catch {
+    // ignore storage errors
+  }
+}
+
 export const CategoryBrowseView: React.FC<CategoryBrowseViewProps> = ({
   categorySlug,
   titleKey,
@@ -22,6 +60,8 @@ export const CategoryBrowseView: React.FC<CategoryBrowseViewProps> = ({
     seriesList,
     offlineRecords,
     catalogItems,
+    catalogLoading,
+    catalogError,
     isOnline,
     apiBaseUrl,
     catalogVersion,
@@ -29,88 +69,128 @@ export const CategoryBrowseView: React.FC<CategoryBrowseViewProps> = ({
   } = useApp();
   const offlineRecordsRef = useRef(offlineRecords);
   offlineRecordsRef.current = offlineRecords;
-  const catalogItemsRef = useRef(catalogItems);
-  catalogItemsRef.current = catalogItems;
 
-  const [selectedSeriesId, setSelectedSeriesId] = useState<string>('');
-  const [mediaFilter, setMediaFilter] = useState<'all' | 'audio' | 'document' | 'transcript'>('all');
-  const [sort, setSort] = useState<'newest' | 'popular' | 'episode'>('newest');
-  const [items, setItems] = useState<ContentItem[]>([]);
+  const initialFilter = readCategoryFilter(categorySlug);
+  const [selectedSeriesId, setSelectedSeriesId] = useState<string>(initialFilter.selectedSeriesId);
+  const [mediaFilter, setMediaFilter] = useState<'all' | 'audio' | 'document' | 'transcript'>(
+    initialFilter.mediaFilter
+  );
+  const [sort, setSort] = useState<'newest' | 'popular' | 'episode'>(initialFilter.sort);
+  const [serverItems, setServerItems] = useState<ContentItem[] | null>(null);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
-  const [loading, setLoading] = useState(true);
+  const [fetching, setFetching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const categorySeries = seriesList.filter((s) => s.categorySlug === categorySlug);
 
+  // Instant client-side projection from SWR/live catalogItems for zero-latency switching & reopen
+  const instantCatalogItems = useMemo(() => {
+    const filtered = catalogItems.filter((i) => {
+      if (i.categorySlug !== categorySlug) return false;
+      if (selectedSeriesId && i.seriesId !== selectedSeriesId) return false;
+      if (mediaFilter === 'audio' && !i.audio?.url) return false;
+      if (mediaFilter === 'document' && !i.document?.url) return false;
+      if (mediaFilter === 'transcript' && !i.transcript) return false;
+      return true;
+    });
+    return [...filtered].sort((a, b) => {
+      if (sort === 'popular') return (b.playCount || 0) - (a.playCount || 0);
+      if (sort === 'episode') return (a.episodeNumber || 0) - (b.episodeNumber || 0);
+      return (b.publishedAt || b.createdAt || '').localeCompare(a.publishedAt || a.createdAt || '');
+    });
+  }, [catalogItems, categorySlug, selectedSeriesId, mediaFilter, sort]);
+
   useEffect(() => {
-    setSelectedSeriesId('');
-    setMediaFilter('all');
+    const saved = readCategoryFilter(categorySlug);
+    setSelectedSeriesId(saved.selectedSeriesId);
+    setMediaFilter(saved.mediaFilter);
+    setSort(saved.sort);
+    setServerItems(null);
     setPage(1);
   }, [categorySlug]);
 
+  useEffect(() => {
+    writeCategoryFilter(categorySlug, { selectedSeriesId, mediaFilter, sort });
+  }, [categorySlug, selectedSeriesId, mediaFilter, sort]);
+
   const fetchItems = useCallback(
-    async (pageNum = 1, append = false) => {
+    async (pageNum = 1, append = false, forceRefresh = false) => {
       if (!getApiBaseUrl()) {
-        setItems([]);
-        setLoading(false);
+        setServerItems([]);
+        setFetching(false);
         setError(null);
         return;
       }
-      if (pageNum === 1) setLoading(true);
+      setFetching(true);
       setError(null);
       try {
         const params = new URLSearchParams({
           category: categorySlug,
           page: String(pageNum),
-          limit: '10',
+          limit: '20',
           sort,
         });
         if (selectedSeriesId) params.set('seriesId', selectedSeriesId);
         if (mediaFilter !== 'all') params.set('media', mediaFilter);
 
         const res = await apiRequest<{ items: ContentItem[]; pagination: { totalPages: number } }>(
-          `/api/content?${params.toString()}`
+          `/api/content?${params.toString()}`,
+          { forceRefresh }
         );
         if (append) {
-          setItems((prev) => [...prev, ...(res.items || [])]);
+          setServerItems((prev) => [...(prev || []), ...(res.items || [])]);
         } else {
-          setItems(res.items || []);
+          setServerItems(res.items || []);
         }
         setPage(pageNum);
         setTotalPages(res.pagination?.totalPages || 1);
       } catch (err: any) {
-        const cachedRemote = catalogItemsRef.current.filter((i) => {
-          if (i.categorySlug !== categorySlug) return false;
-          if (selectedSeriesId && i.seriesId !== selectedSeriesId) return false;
-          if (mediaFilter === 'audio' && !i.audio?.url) return false;
-          if (mediaFilter === 'document' && !i.document?.url) return false;
-          if (mediaFilter === 'transcript' && !i.transcript) return false;
-          return true;
-        });
-
-        if (cachedRemote.length > 0) {
-          setItems(cachedRemote);
-        } else {
-          const offline = offlineRecordsRef.current
-            .map((r) => r.itemSnapshot)
-            .filter((i) => i.categorySlug === categorySlug);
-          const unique = Array.from(new Map(offline.map((i) => [i.id, i])).values());
-          setItems(unique);
-          if (isOnline && unique.length === 0) {
-            setError(err?.message || 'Unable to fetch items from the content server.');
-          }
+        if (isOnline && instantCatalogItems.length === 0) {
+          setError(err?.message || 'Unable to fetch items from the content server.');
         }
       } finally {
-        setLoading(false);
+        setFetching(false);
       }
     },
-    [categorySlug, selectedSeriesId, mediaFilter, sort, isOnline]
+    [categorySlug, selectedSeriesId, mediaFilter, sort, isOnline, instantCatalogItems.length]
   );
 
+  // Only fire category endpoint if filter/sort isn't default OR catalog has many items; background sync updates catalogItems automatically
   useEffect(() => {
+    const isDefaultUnfiltered = !selectedSeriesId && mediaFilter === 'all' && sort === 'newest';
+    if (isDefaultUnfiltered && catalogItems.length > 0 && catalogItems.length < 500) {
+      setServerItems(null);
+      setError(null);
+      return;
+    }
     fetchItems(1, false);
-  }, [fetchItems, apiBaseUrl, isOnline, catalogVersion]);
+  }, [fetchItems, apiBaseUrl, isOnline, catalogVersion, selectedSeriesId, mediaFilter, sort, catalogItems.length]);
+
+  const offlineFallback = useMemo(
+    () =>
+      Array.from(
+        new Map(
+          offlineRecords
+            .map((r) => r.itemSnapshot)
+            .filter((i) => i.categorySlug === categorySlug)
+            .map((i) => [i.id, i])
+        ).values()
+      ),
+    [offlineRecords, categorySlug]
+  );
+
+  const items =
+    serverItems !== null
+      ? serverItems
+      : instantCatalogItems.length > 0
+        ? instantCatalogItems
+        : !isOnline || error || catalogError
+          ? offlineFallback
+          : [];
+
+  const showSkeleton = (fetching || catalogLoading) && items.length === 0;
+  const effectiveError = items.length === 0 ? error || catalogError : null;
 
   return (
     <div className="space-y-6">
@@ -124,12 +204,12 @@ export const CategoryBrowseView: React.FC<CategoryBrowseViewProps> = ({
         <button
           type="button"
           onClick={() => {
-            refreshCatalogMeta();
-            fetchItems(1, false);
+            refreshCatalogMeta(true);
+            fetchItems(1, false, true);
           }}
           className="inline-flex items-center gap-2 min-h-[40px] self-start rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 cursor-pointer"
         >
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+          <RefreshCw className={`w-3.5 h-3.5 ${fetching || catalogLoading ? 'animate-spin' : ''}`} />
           <span>{t(language, 'pullToRefresh')}</span>
         </button>
       </div>
@@ -205,7 +285,7 @@ export const CategoryBrowseView: React.FC<CategoryBrowseViewProps> = ({
       </div>
 
       {/* Content Grid */}
-      {loading && items.length === 0 ? (
+      {showSkeleton ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {[1, 2, 3, 4].map((n) => (
             <div
@@ -214,12 +294,12 @@ export const CategoryBrowseView: React.FC<CategoryBrowseViewProps> = ({
             />
           ))}
         </div>
-      ) : error && items.length === 0 ? (
+      ) : effectiveError && items.length === 0 ? (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-center dark:border-amber-900/60 dark:bg-amber-950/30">
-          <p className="text-sm text-amber-900 dark:text-amber-200">{error}</p>
+          <p className="text-sm text-amber-900 dark:text-amber-200">{effectiveError}</p>
           <button
             type="button"
-            onClick={() => fetchItems(1, false)}
+            onClick={() => fetchItems(1, false, true)}
             className="mt-3 min-h-[40px] rounded-xl bg-amber-800 px-4 py-2 text-xs font-medium text-white cursor-pointer"
           >
             Retry

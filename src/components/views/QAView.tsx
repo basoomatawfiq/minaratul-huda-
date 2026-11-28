@@ -7,27 +7,40 @@ import type { ContentItem, QASubmission } from '../../types/content';
 import { ContentCard } from '../content/ContentCard';
 
 export const QAView: React.FC = () => {
-  const { language, user, setSection, showToast, offlineRecords, catalogItems, apiBaseUrl, isOnline, catalogVersion } = useApp();
-  const [qaContent, setQaContent] = useState<ContentItem[]>([]);
+  const { language, user, setSection, showToast, offlineRecords, catalogItems, catalogLoading, apiBaseUrl, isOnline, catalogVersion } = useApp();
+  const [qaContent, setQaContent] = useState<ContentItem[]>(() =>
+    catalogItems.filter((i) => i.categorySlug === 'qa')
+  );
   const [myQuestions, setMyQuestions] = useState<QASubmission[]>([]);
   const [topic, setTopic] = useState('Fiqh of Worship');
   const [questionText, setQuestionText] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadQA = useCallback(async () => {
-    setLoading(true);
     setError(null);
+    const cachedQa = catalogItems.filter((i) => i.categorySlug === 'qa');
+    if (cachedQa.length > 0) {
+      setQaContent(cachedQa);
+    }
+
+    if (!user && cachedQa.length > 0 && catalogItems.length < 500) {
+      setLoading(false);
+      return;
+    }
+
+    setLoading(cachedQa.length === 0 && catalogLoading);
     try {
-      const res = await apiRequest<{ items: ContentItem[] }>('/api/content?category=qa&limit=25');
-      setQaContent(res.items || []);
+      if (catalogItems.length === 0 || catalogItems.length >= 500) {
+        const res = await apiRequest<{ items: ContentItem[] }>('/api/content?category=qa&limit=25');
+        setQaContent(res.items || []);
+      }
       if (user) {
         const myRes = await apiRequest<{ items: QASubmission[] }>('/api/user/qa');
         setMyQuestions(myRes.items || []);
       }
     } catch (err: any) {
-      const cachedQa = catalogItems.filter((i) => i.categorySlug === 'qa');
       if (cachedQa.length > 0) {
         setQaContent(cachedQa);
       } else {
@@ -43,7 +56,7 @@ export const QAView: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [user, offlineRecords, catalogItems, isOnline]);
+  }, [user, offlineRecords, catalogItems, catalogLoading, isOnline]);
 
   useEffect(() => {
     loadQA();

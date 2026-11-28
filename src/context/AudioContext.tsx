@@ -15,9 +15,46 @@ import { useApp } from './AppContext';
 
 export type RepeatMode = 'off' | 'all' | 'one';
 
+const LS_AUDIO_SESSION = 'minaratul_huda_audio_session_v1';
+
 // 1-sample silent PCM WAV to unlock HTMLAudioElement synchronously inside the user's tap gesture
 const SILENT_UNLOCK_WAV_URI =
   'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+
+interface PersistedAudioSession {
+  track: ContentItem;
+  queue: ContentItem[];
+  positionSeconds: number;
+  durationSeconds: number;
+  playbackRate: number;
+  repeatMode: RepeatMode;
+  isExpanded: boolean;
+  updatedAt: string;
+}
+
+function readPersistedAudioSession(): PersistedAudioSession | null {
+  try {
+    const raw = localStorage.getItem(LS_AUDIO_SESSION);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PersistedAudioSession;
+    if (!parsed?.track?.id || !parsed.track.audio?.url) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writePersistedAudioSession(session: PersistedAudioSession | null) {
+  try {
+    if (!session) {
+      localStorage.removeItem(LS_AUDIO_SESSION);
+    } else {
+      localStorage.setItem(LS_AUDIO_SESSION, JSON.stringify(session));
+    }
+  } catch {
+    // ignore storage errors
+  }
+}
 
 interface AudioContextValue {
   currentTrack: ContentItem | null;
@@ -94,13 +131,25 @@ async function fetchAudioBytesWithProgress(
 }
 
 export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { recordListeningProgress, listeningHistory, showToast, isOnline, isItemDownloaded } = useApp();
+  const {
+    recordListeningProgress,
+    listeningHistory,
+    catalogItems,
+    catalogVersion,
+    showToast,
+    isOnline,
+    isItemDownloaded,
+  } = useApp();
+
+  const initialSessionRef = useRef<PersistedAudioSession | null>(readPersistedAudioSession());
+
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const activeBlobUrlRef = useRef<string | null>(null);
   const lastSyncRef = useRef<number>(0);
+  const lastSessionSaveRef = useRef<number>(0);
   const playRequestIdRef = useRef<number>(0);
   const abortControllerRef = useRef<AbortController | null>(null);
-  const currentTrackRef = useRef<ContentItem | null>(null);
+  const currentTrackRef = useRef<ContentItem | null>(initialSessionRef.current?.track || null);
   const unlockingRef = useRef<boolean>(false);
   const activeMetaRef = useRef<{
     reqId: number;
@@ -113,18 +162,96 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     initialPos: number;
   } | null>(null);
 
-  const [currentTrack, setCurrentTrack] = useState<ContentItem | null>(null);
-  const [queue, setQueue] = useState<ContentItem[]>([]);
+  const [currentTrack, setCurrentTrack] = useState<ContentItem | null>(
+    () => initialSessionRef.current?.track || null
+  );
+  const [queue, setQueue] = useState<ContentItem[]>(
+    () => initialSessionRef.current?.queue || []
+  );
   const [isPlaying, setIsPlaying] = useState(false);
   const [isBuffering, setIsBuffering] = useState(false);
   const [loadingStatus, setLoadingStatus] = useState<string | null>(null);
   const [audioError, setAudioError] = useState<string | null>(null);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const [playbackRate, setPlaybackRateState] = useState(1);
-  const [repeatMode, setRepeatMode] = useState<RepeatMode>('off');
-  const [isExpanded, setIsExpanded] = useState(false);
-  const [isPlayingOffline, setIsPlayingOffline] = useState(false);
+  const [currentTime, setCurrentTime] = useState<number>(
+    () => initialSessionRef.current?.positionSeconds || 0
+  );
+  const [duration, setDuration] = useState<number>(
+    () =>
+      initialSessionRef.current?.durationSeconds ||
+      initialSessionRef.current?.track.audio?.durationSeconds ||
+      0
+  );
+  const [playbackRate, setPlaybackRateState] = useState<number>(
+    () => initialSessionRef.current?.playbackRate || 1
+  );
+  const [repeatMode, setRepeatMode] = useState<RepeatMode>(
+    () => initialSessionRef.current?.repeatMode || 'off'
+  );
+  const [isExpanded, setIsExpandedState] = useState<boolean>(
+    () => Boolean(initialSessionRef.current?.isExpanded && initialSessionRef.current?.track)
+  );
+  const [isPlayingOffline, setIsPlayingOffline] = useState<boolean>(() =>
+    initialSessionRef.current?.track
+      ? isItemDownloaded(initialSessionRef.current.track.id, 'audio')
+      : false
+  );
+
+  const queueRef = useRef(queue);
+  queueRef.current = queue;
+  const currentTimeRef = useRef(currentTime);
+  currentTimeRef.current = currentTime;
+  const durationRef = useRef(duration);
+  durationRef.current = duration;
+  const playbackRateRef = useRef(playbackRate);
+  playbackRateRef.current = playbackRate;
+  const repeatModeRef = useRef(repeatMode);
+  repeatModeRef.current = repeatMode;
+  const isExpandedRef = useRef(isExpanded);
+  isExpandedRef.current = isExpanded;
+
+  const persistSessionNow = useCallback(
+    (overridePos?: number, overrideExpanded?: boolean) => {
+      const track = currentTrackRef.current;
+      if (!track) {
+        writePersistedAudioSession(null);
+        return;
+      }
+      const audio = audioRef.current;
+      const livePos =
+        overridePos !== undefined
+          ? overridePos
+          : audio && !unlockingRef.current && audio.currentSrc
+            ? audio.currentTime
+            : currentTimeRef.current;
+      const liveDur =
+        (audio && !unlockingRef.current && Number.isFinite(audio.duration) && audio.duration > 0
+          ? audio.duration
+          : durationRef.current) ||
+        track.audio?.durationSeconds ||
+        0;
+
+      writePersistedAudioSession({
+        track,
+        queue: queueRef.current,
+        positionSeconds: Math.max(0, livePos || 0),
+        durationSeconds: Math.max(0, liveDur || 0),
+        playbackRate: playbackRateRef.current,
+        repeatMode: repeatModeRef.current,
+        isExpanded: overrideExpanded !== undefined ? overrideExpanded : isExpandedRef.current,
+        updatedAt: new Date().toISOString(),
+      });
+    },
+    []
+  );
+
+  const setIsExpanded = useCallback(
+    (v: boolean) => {
+      isExpandedRef.current = v;
+      setIsExpandedState(v);
+      persistSessionNow(undefined, v);
+    },
+    [persistSessionNow]
+  );
 
   const cleanupBlob = () => {
     if (activeBlobUrlRef.current) {
@@ -136,6 +263,22 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   useEffect(() => {
     currentTrackRef.current = currentTrack;
   }, [currentTrack]);
+
+  // Keep restored track synced with server catalog; clear only if deleted by admin and not offline
+  useEffect(() => {
+    if (catalogVersion === 0 || !currentTrackRef.current) return;
+    const match = catalogItems.find((i) => i.id === currentTrackRef.current?.id);
+    if (match) {
+      currentTrackRef.current = match;
+      setCurrentTrack(match);
+      persistSessionNow();
+    } else if (!isItemDownloaded(currentTrackRef.current.id, 'audio')) {
+      currentTrackRef.current = null;
+      setCurrentTrack(null);
+      setIsExpandedState(false);
+      writePersistedAudioSession(null);
+    }
+  }, [catalogVersion, catalogItems, isItemDownloaded, persistSessionNow]);
 
   useEffect(() => {
     const audio = new Audio();
@@ -150,6 +293,41 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
   }, []);
 
+  // Flush exact playback timestamp immediately when user backgrounds, navigates away, or closes app
+  useEffect(() => {
+    const flushNow = () => {
+      const track = currentTrackRef.current;
+      const audio = audioRef.current;
+      if (!track) return;
+      const pos =
+        audio && !unlockingRef.current && audio.currentSrc
+          ? audio.currentTime
+          : currentTimeRef.current;
+      const dur =
+        (audio && !unlockingRef.current && Number.isFinite(audio.duration) && audio.duration > 0
+          ? audio.duration
+          : durationRef.current) ||
+        track.audio?.durationSeconds ||
+        0;
+      persistSessionNow(pos);
+      if (pos > 0) {
+        recordListeningProgress(track, pos, dur);
+      }
+    };
+
+    const onVisChange = () => {
+      if (document.visibilityState === 'hidden') flushNow();
+    };
+    window.addEventListener('pagehide', flushNow);
+    window.addEventListener('beforeunload', flushNow);
+    document.addEventListener('visibilitychange', onVisChange);
+    return () => {
+      window.removeEventListener('pagehide', flushNow);
+      window.removeEventListener('beforeunload', flushNow);
+      document.removeEventListener('visibilitychange', onVisChange);
+    };
+  }, [persistSessionNow, recordListeningProgress]);
+
   const attachMetadataAndResume = useCallback(
     (audio: HTMLAudioElement, item: ContentItem, reqId: number, initialPos: number) => {
       let resumed = false;
@@ -158,10 +336,12 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const finiteDur = audio.duration && Number.isFinite(audio.duration) ? audio.duration : 0;
         if (finiteDur > 0) {
           setDuration(finiteDur);
+          durationRef.current = finiteDur;
           if (!resumed && initialPos > 0 && initialPos < finiteDur - 1) {
             resumed = true;
             audio.currentTime = initialPos;
             setCurrentTime(initialPos);
+            currentTimeRef.current = initialPos;
           }
         } else if (item.audio?.durationSeconds) {
           setDuration(item.audio.durationSeconds);
@@ -286,7 +466,28 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       const needsTranscode = shouldTranscodeDirectly(audio, ext, mime) || Boolean(cachedDecoded);
       const hasOfflineCopy = isItemDownloaded(item.id, 'audio');
 
-      // Synchronous UI + Gesture Unlock BEFORE any await!
+      // Determine resume position synchronously (explicit arg > active restored session > listeningHistory)
+      let initialPos = resumeAt ?? 0;
+      if (resumeAt === undefined) {
+        if (currentTrackRef.current?.id === item.id && currentTimeRef.current > 2) {
+          const total = durationRef.current || item.audio.durationSeconds || 0;
+          if (!total || currentTimeRef.current < total - 3) {
+            initialPos = currentTimeRef.current;
+          }
+        } else {
+          const hist = listeningHistory.find((h) => h.contentId === item.id);
+          if (hist?.positionSeconds && hist.positionSeconds > 3) {
+            const total = hist.durationSeconds || item.audio.durationSeconds || 0;
+            if (!total || hist.positionSeconds < total - 3) {
+              initialPos = hist.positionSeconds;
+            }
+          }
+        }
+      }
+
+      // Synchronous UI + Session Persistence + Gesture Unlock BEFORE any await!
+      currentTrackRef.current = item;
+      currentTimeRef.current = initialPos;
       setAudioError(null);
       setLoadingStatus(
         cachedDecoded
@@ -298,24 +499,11 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setIsBuffering(true);
       setIsPlaying(false);
       setCurrentTrack(item);
-      setCurrentTime(0);
+      setCurrentTime(initialPos);
       setDuration(cachedDecoded?.durationSeconds || item.audio.durationSeconds || 0);
       setIsPlayingOffline(hasOfflineCopy);
+      persistSessionNow(initialPos);
 
-      // Determine resume position synchronously
-      let initialPos = resumeAt ?? 0;
-      if (resumeAt === undefined) {
-        const hist = listeningHistory.find((h) => h.contentId === item.id);
-        if (hist?.positionSeconds && hist.positionSeconds > 3) {
-          const total = hist.durationSeconds || item.audio.durationSeconds || 0;
-          if (!total || hist.positionSeconds < total - 3) {
-            initialPos = hist.positionSeconds;
-          }
-        }
-      }
-
-      // Fast path for native browser formats already online & not offline-cached, OR already decoded in memory cache:
-      // start audio.play() SYNCHRONOUSLY inside the user's tap gesture!
       let syncPlayPromise: Promise<void> | null = null;
       if (cachedDecoded) {
         unlockingRef.current = false;
@@ -326,7 +514,6 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         audio.playbackRate = playbackRate;
         if (initialPos > 0 && cachedDecoded.durationSeconds > 1 && initialPos < cachedDecoded.durationSeconds - 1) {
           audio.currentTime = initialPos;
-          setCurrentTime(initialPos);
         }
         syncPlayPromise = audio.play();
       } else if (!needsTranscode && !hasOfflineCopy && isOnline) {
@@ -336,7 +523,6 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         audio.playbackRate = playbackRate;
         syncPlayPromise = audio.play();
       } else {
-        // Offline blob lookup or non-native transcode requires async work; unlock audio element synchronously now
         unlockAudioGestureSync(audio);
         if (needsTranscode && !hasOfflineCopy && isOnline) {
           preloadAudioDecoder();
@@ -439,7 +625,6 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         unlockingRef.current = false;
         audio.muted = false;
 
-        // If direct native playback failed (e.g. 3GP with AMR track or unsupported browser container), auto-fallback to WASM/WebAudio decoder
         const meta = activeMetaRef.current;
         if (meta && meta.reqId === reqId && !meta.fallbackTried) {
           meta.fallbackTried = true;
@@ -480,7 +665,15 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setAudioError(message);
       }
     },
-    [playbackRate, listeningHistory, isOnline, isItemDownloaded, attachMetadataAndResume, transcodeAndAssignSrc]
+    [
+      playbackRate,
+      listeningHistory,
+      isOnline,
+      isItemDownloaded,
+      attachMetadataAndResume,
+      transcodeAndAssignSrc,
+      persistSessionNow,
+    ]
   );
 
   const playItem = useCallback(
@@ -490,9 +683,16 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         return;
       }
 
-      if (currentTrack?.id === item.id && audioRef.current && startAtSeconds === undefined && !audioError) {
+      // If this track already matches currentTrack and audio element ALREADY has a loaded source
+      if (
+        currentTrack?.id === item.id &&
+        audioRef.current &&
+        audioRef.current.currentSrc &&
+        !unlockingRef.current &&
+        startAtSeconds === undefined &&
+        !audioError
+      ) {
         if (isBuffering) {
-          // Audio is currently loading/decoding; immediately open the full player view
           setIsExpanded(true);
           return;
         }
@@ -503,6 +703,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         } else {
           audioRef.current.pause();
           setIsPlaying(false);
+          persistSessionNow();
         }
         return;
       }
@@ -511,21 +712,26 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setIsExpanded(true);
 
       if (queueItems && queueItems.length > 0) {
-        setQueue(queueItems.filter((q) => Boolean(q.audio?.url)));
+        const filtered = queueItems.filter((q) => Boolean(q.audio?.url));
+        queueRef.current = filtered;
+        setQueue(filtered);
       } else if (!queue.some((q) => q.id === item.id)) {
-        setQueue((prev) => [item, ...prev.filter((q) => q.id !== item.id)]);
+        const nextQ = [item, ...queue.filter((q) => q.id !== item.id)];
+        queueRef.current = nextQ;
+        setQueue(nextQ);
       }
 
       await loadAndPlay(item, startAtSeconds);
     },
-    [currentTrack, queue, audioError, isBuffering, loadAndPlay, showToast]
+    [currentTrack, queue, audioError, isBuffering, loadAndPlay, showToast, setIsExpanded, persistSessionNow]
   );
 
   const togglePlayPause = useCallback(() => {
     const audio = audioRef.current;
     if (!audio || !currentTrack) return;
-    if (audioError) {
-      loadAndPlay(currentTrack);
+    if (audioError || !audio.currentSrc) {
+      // Restored session after app reopen: start loading & resume seamlessly from saved currentTime!
+      loadAndPlay(currentTrack, currentTimeRef.current);
       return;
     }
     if (isBuffering && unlockingRef.current) return;
@@ -534,28 +740,43 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     } else {
       audio.pause();
       setIsPlaying(false);
+      persistSessionNow(audio.currentTime);
       recordListeningProgress(
         currentTrack,
         audio.currentTime,
         (Number.isFinite(audio.duration) ? audio.duration : 0) || currentTrack.audio?.durationSeconds || 0
       );
     }
-  }, [currentTrack, audioError, isBuffering, loadAndPlay, recordListeningProgress]);
+  }, [currentTrack, audioError, isBuffering, loadAndPlay, recordListeningProgress, persistSessionNow]);
 
-  const seek = useCallback((seconds: number) => {
-    const audio = audioRef.current;
-    if (!audio || unlockingRef.current) return;
-    const maxDur = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : duration || seconds;
-    const clamped = Math.max(0, Math.min(seconds, maxDur));
-    audio.currentTime = clamped;
-    setCurrentTime(clamped);
-  }, [duration]);
+  const seek = useCallback(
+    (seconds: number) => {
+      const audio = audioRef.current;
+      if (!audio || unlockingRef.current) return;
+      const maxDur =
+        (Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : 0) ||
+        durationRef.current ||
+        seconds;
+      const clamped = Math.max(0, Math.min(seconds, maxDur));
+      if (audio.currentSrc) {
+        audio.currentTime = clamped;
+      }
+      currentTimeRef.current = clamped;
+      setCurrentTime(clamped);
+      persistSessionNow(clamped);
+      if (currentTrackRef.current) {
+        recordListeningProgress(currentTrackRef.current, clamped, maxDur);
+      }
+    },
+    [persistSessionNow, recordListeningProgress]
+  );
 
   const skipBy = useCallback(
     (deltaSeconds: number) => {
       const audio = audioRef.current;
       if (!audio || unlockingRef.current) return;
-      seek(audio.currentTime + deltaSeconds);
+      const basePos = audio.currentSrc ? audio.currentTime : currentTimeRef.current;
+      seek(basePos + deltaSeconds);
     },
     [seek]
   );
@@ -573,7 +794,8 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const prevTrack = useCallback(() => {
     const audio = audioRef.current;
-    if (audio && audio.currentTime > 4) {
+    const activePos = audio?.currentSrc ? audio.currentTime : currentTimeRef.current;
+    if (activePos > 4) {
       seek(0);
       return;
     }
@@ -584,27 +806,40 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     }
   }, [currentTrack, queue, seek, loadAndPlay]);
 
-  const setPlaybackRate = useCallback((rate: number) => {
-    setPlaybackRateState(rate);
-    if (audioRef.current) {
-      audioRef.current.playbackRate = rate;
-    }
-  }, []);
+  const setPlaybackRate = useCallback(
+    (rate: number) => {
+      playbackRateRef.current = rate;
+      setPlaybackRateState(rate);
+      if (audioRef.current) {
+        audioRef.current.playbackRate = rate;
+      }
+      persistSessionNow();
+    },
+    [persistSessionNow]
+  );
 
   const cycleRepeat = useCallback(() => {
-    setRepeatMode((prev) => (prev === 'off' ? 'all' : prev === 'all' ? 'one' : 'off'));
-  }, []);
+    setRepeatMode((prev) => {
+      const next = prev === 'off' ? 'all' : prev === 'all' ? 'one' : 'off';
+      repeatModeRef.current = next;
+      persistSessionNow();
+      return next;
+    });
+  }, [persistSessionNow]);
 
   const addToQueue = useCallback(
     (item: ContentItem) => {
       if (!item.audio?.url) return;
       setQueue((prev) => {
         if (prev.some((p) => p.id === item.id)) return prev;
-        return [...prev, item];
+        const next = [...prev, item];
+        queueRef.current = next;
+        persistSessionNow();
+        return next;
       });
       showToast('Added to playback queue.');
     },
-    [showToast]
+    [showToast, persistSessionNow]
   );
 
   const closePlayer = useCallback(() => {
@@ -620,12 +855,15 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       audioRef.current.removeAttribute('src');
       audioRef.current.load();
     }
+    currentTrackRef.current = null;
+    isExpandedRef.current = false;
     setIsPlaying(false);
     setIsBuffering(false);
     setLoadingStatus(null);
     setAudioError(null);
-    setIsExpanded(false);
+    setIsExpandedState(false);
     setCurrentTrack(null);
+    writePersistedAudioSession(null);
     cleanupBlob();
   }, []);
 
@@ -637,9 +875,17 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const onTimeUpdate = () => {
       if (unlockingRef.current) return;
       setCurrentTime(audio.currentTime);
+      currentTimeRef.current = audio.currentTime;
       const validDur = audio.duration && Number.isFinite(audio.duration) ? audio.duration : 0;
-      if (validDur > 0) setDuration(validDur);
+      if (validDur > 0) {
+        setDuration(validDur);
+        durationRef.current = validDur;
+      }
       const now = Date.now();
+      if (now - lastSessionSaveRef.current > 1000) {
+        lastSessionSaveRef.current = now;
+        persistSessionNow(audio.currentTime);
+      }
       if (currentTrack && now - lastSyncRef.current > 3500) {
         lastSyncRef.current = now;
         recordListeningProgress(currentTrack, audio.currentTime, validDur || currentTrack.audio?.durationSeconds || 0);
@@ -655,14 +901,16 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setIsPlaying(true);
     };
     const onPause = () => {
-      if (!unlockingRef.current) setIsPlaying(false);
+      if (!unlockingRef.current) {
+        setIsPlaying(false);
+        persistSessionNow(audio.currentTime);
+      }
     };
     const onError = async () => {
       if (unlockingRef.current || !currentTrackRef.current) return;
       const meta = activeMetaRef.current;
       const signal = abortControllerRef.current?.signal;
 
-      // Attempt automatic universal decode fallback if native <audio> element fired a source/decode error
       if (
         meta &&
         meta.reqId === playRequestIdRef.current &&
@@ -712,6 +960,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       if (currentTrack) {
         const validDur = audio.duration && Number.isFinite(audio.duration) ? audio.duration : 0;
         recordListeningProgress(currentTrack, 0, validDur || currentTrack.audio?.durationSeconds || 0, true);
+        persistSessionNow(0);
       }
       if (repeatMode === 'one') {
         audio.currentTime = 0;
@@ -736,7 +985,7 @@ export const AudioProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       audio.removeEventListener('error', onError);
       audio.removeEventListener('ended', onEnded);
     };
-  }, [currentTrack, repeatMode, playbackRate, nextTrack, recordListeningProgress, transcodeAndAssignSrc]);
+  }, [currentTrack, repeatMode, playbackRate, nextTrack, recordListeningProgress, transcodeAndAssignSrc, persistSessionNow]);
 
   // Wire lock-screen & headphone MediaSession API
   useEffect(() => {

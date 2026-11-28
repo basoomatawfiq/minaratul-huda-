@@ -15,6 +15,34 @@ import type { AppLanguage } from '../../types/content';
 import { DownloadDocumentButton } from '../content/ActionButtons';
 
 const LS_BOOKMARKS = 'albayan_reader_bookmarks_v1';
+const LS_READER_PROGRESS = 'minaratul_huda_reader_progress_v1';
+
+interface SavedReaderProgress {
+  scrollTop: number;
+  scrollPercent: number;
+  fontSize?: number;
+  transcriptLang?: AppLanguage;
+  activeMode?: 'transcript' | 'pdf';
+}
+
+function readItemProgress(itemId: string): SavedReaderProgress | null {
+  try {
+    const all = JSON.parse(localStorage.getItem(LS_READER_PROGRESS) || '{}');
+    return all?.[itemId] || null;
+  } catch {
+    return null;
+  }
+}
+
+function saveItemProgress(itemId: string, patch: Partial<SavedReaderProgress>) {
+  try {
+    const all = JSON.parse(localStorage.getItem(LS_READER_PROGRESS) || '{}');
+    all[itemId] = { ...(all[itemId] || { scrollTop: 0, scrollPercent: 0 }), ...patch };
+    localStorage.setItem(LS_READER_PROGRESS, JSON.stringify(all));
+  } catch {
+    // ignore storage errors
+  }
+}
 
 export const UniversalReader: React.FC = () => {
   const { readerTarget, closeReader, language, isOnline, recordReadingProgress, showToast } = useApp();
@@ -28,11 +56,14 @@ export const UniversalReader: React.FC = () => {
   const [bookmarked, setBookmarked] = useState(false);
 
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const scrollSaveTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!readerTarget) return;
-    setActiveMode(readerTarget.mode);
-    setTranscriptLang(language);
+    const savedProgress = readItemProgress(readerTarget.item.id);
+    setActiveMode(savedProgress?.activeMode || readerTarget.mode);
+    setTranscriptLang(savedProgress?.transcriptLang || language);
+    setFontSize(savedProgress?.fontSize || 17);
     setSearchQuery('');
 
     try {
@@ -42,9 +73,22 @@ export const UniversalReader: React.FC = () => {
       setBookmarked(false);
     }
 
-    // Record initial read open
-    recordReadingProgress(readerTarget.item, 15);
+    // Restore exact scrollTop when transcript container mounts
+    const raf = requestAnimationFrame(() => {
+      const el = scrollContainerRef.current;
+      if (el && savedProgress?.scrollTop && savedProgress.scrollTop > 0) {
+        el.scrollTop = savedProgress.scrollTop;
+      }
+    });
+
+    recordReadingProgress(readerTarget.item, savedProgress?.scrollPercent || 15);
+    return () => cancelAnimationFrame(raf);
   }, [readerTarget, language, recordReadingProgress]);
+
+  useEffect(() => {
+    if (!readerTarget) return;
+    saveItemProgress(readerTarget.item.id, { activeMode, transcriptLang, fontSize });
+  }, [readerTarget, activeMode, transcriptLang, fontSize]);
 
   // Resolve PDF source (offline CacheStorage blob or network URL)
   useEffect(() => {
@@ -107,11 +151,17 @@ export const UniversalReader: React.FC = () => {
 
   const handleScroll = () => {
     const el = scrollContainerRef.current;
-    if (!el) return;
+    if (!el || !item) return;
     const maxScroll = el.scrollHeight - el.clientHeight;
-    if (maxScroll > 0) {
-      const pct = Math.round((el.scrollTop / maxScroll) * 100);
-      if (pct >= 25) recordReadingProgress(item, Math.min(100, pct));
+    const pct = maxScroll > 0 ? Math.min(100, Math.round((el.scrollTop / maxScroll) * 100)) : 0;
+
+    if (scrollSaveTimerRef.current) window.clearTimeout(scrollSaveTimerRef.current);
+    scrollSaveTimerRef.current = window.setTimeout(() => {
+      saveItemProgress(item.id, { scrollTop: el.scrollTop, scrollPercent: pct });
+    }, 150);
+
+    if (pct >= 25) {
+      recordReadingProgress(item, pct);
     }
   };
 

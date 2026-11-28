@@ -33,6 +33,27 @@ import { t } from './i18n/translations';
 import { apiRequest } from './services/api';
 import type { AppSection, ContentItem } from './types/content';
 
+const LS_SCROLL_POSITIONS = 'minaratul_huda_scroll_positions_v1';
+
+function readSectionScroll(sec: AppSection): number {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LS_SCROLL_POSITIONS) || '{}');
+    return typeof saved?.[sec] === 'number' ? saved[sec] : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeSectionScroll(sec: AppSection, y: number) {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LS_SCROLL_POSITIONS) || '{}');
+    saved[sec] = Math.max(0, Math.round(y));
+    localStorage.setItem(LS_SCROLL_POSITIONS, JSON.stringify(saved));
+  } catch {
+    // ignore storage errors
+  }
+}
+
 const MainShell: React.FC = () => {
   const {
     section,
@@ -42,8 +63,41 @@ const MainShell: React.FC = () => {
     user,
     toast,
     openContentDetails,
+    closeReader,
   } = useApp();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  // Restore scroll position for the active section on mount & flush continuously on scroll/hide
+  useEffect(() => {
+    const savedY = readSectionScroll(section);
+    const restoreTimer = window.setTimeout(() => {
+      if (savedY > 0) {
+        window.scrollTo({ top: savedY, behavior: 'auto' });
+      }
+    }, 60);
+
+    let scrollTimer: number | null = null;
+    const onScroll = () => {
+      if (scrollTimer) window.clearTimeout(scrollTimer);
+      scrollTimer = window.setTimeout(() => {
+        writeSectionScroll(section, window.scrollY);
+      }, 120);
+    };
+    const flushScroll = () => writeSectionScroll(section, window.scrollY);
+
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('pagehide', flushScroll);
+    window.addEventListener('beforeunload', flushScroll);
+
+    return () => {
+      window.clearTimeout(restoreTimer);
+      if (scrollTimer) window.clearTimeout(scrollTimer);
+      flushScroll();
+      window.removeEventListener('scroll', onScroll);
+      window.removeEventListener('pagehide', flushScroll);
+      window.removeEventListener('beforeunload', flushScroll);
+    };
+  }, [section]);
 
   // Handle shared ?item= deep links
   useEffect(() => {
@@ -52,11 +106,14 @@ const MainShell: React.FC = () => {
     if (itemId) {
       apiRequest<{ item: ContentItem }>(`/api/content/${encodeURIComponent(itemId)}`)
         .then((res) => {
-          if (res.item) openContentDetails(res.item);
+          if (res.item) {
+            closeReader();
+            openContentDetails(res.item);
+          }
         })
         .catch(() => {});
     }
-  }, [openContentDetails]);
+  }, [openContentDetails, closeReader]);
 
   const navItems: { id: AppSection; label: string; icon: React.ReactNode; group: 'discover' | 'library' | 'account' }[] = [
     { id: 'home', label: t(language, 'home'), icon: <Home className="w-4 h-4" />, group: 'discover' },
@@ -75,9 +132,13 @@ const MainShell: React.FC = () => {
   ];
 
   const navigate = (target: AppSection) => {
+    writeSectionScroll(section, window.scrollY);
     setSection(target);
     setMobileMenuOpen(false);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    const savedTargetY = readSectionScroll(target);
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: savedTargetY, behavior: 'auto' });
+    });
   };
 
   return (

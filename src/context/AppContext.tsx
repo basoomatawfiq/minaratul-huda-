@@ -1,5 +1,11 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { apiRequest, getApiBaseUrl, setAuthToken, setStoredApiBaseUrl } from '../services/api';
+import {
+  apiRequest,
+  clearApiCache,
+  getApiBaseUrl,
+  setAuthToken,
+  setStoredApiBaseUrl,
+} from '../services/api';
 import {
   clearAllOfflineDownloads,
   downloadMediaOffline,
@@ -29,6 +35,15 @@ export interface LocalHistoryEntry {
   item: ContentItem;
 }
 
+interface PersistedCatalogSnapshot {
+  baseUrl: string;
+  items: ContentItem[];
+  categories: Category[];
+  seriesList: SeriesItem[];
+  notifications: NotificationItem[];
+  syncedAt: string;
+}
+
 interface AppContextValue {
   section: AppSection;
   setSection: (s: AppSection) => void;
@@ -55,7 +70,7 @@ interface AppContextValue {
   catalogItems: ContentItem[];
   catalogLoading: boolean;
   catalogError: string | null;
-  refreshCatalogMeta: () => Promise<void>;
+  refreshCatalogMeta: (forceRefresh?: boolean) => Promise<void>;
   // Favorites
   favoriteIds: Set<string>;
   favoriteItems: ContentItem[];
@@ -92,6 +107,26 @@ const LS_READ_HIST = 'albayan_read_hist_v1';
 const LS_LANG = 'albayan_lang_v1';
 const LS_THEME = 'albayan_theme_v1';
 const LS_WIFI = 'albayan_wifi_only_v1';
+const LS_CATALOG_CACHE = 'minaratul_huda_catalog_cache_v1';
+const LS_LAST_SECTION = 'minaratul_huda_last_section_v1';
+const LS_SELECTED_CONTENT = 'minaratul_huda_selected_content_v1';
+const LS_READER_TARGET = 'minaratul_huda_reader_target_v1';
+
+const VALID_SECTIONS = new Set<AppSection>([
+  'home',
+  'tafseer',
+  'hadith',
+  'speeches',
+  'qa',
+  'lectures',
+  'documents',
+  'search',
+  'downloads',
+  'favorites',
+  'history',
+  'profile',
+  'settings',
+]);
 
 const LEGACY_SEED_IDS = new Set([
   'cnt_tafseer_01',
@@ -125,8 +160,54 @@ function readJsonStorage<T>(key: string, fallback: T): T {
   }
 }
 
+function writeJsonStorage(key: string, value: unknown) {
+  try {
+    if (value === null || value === undefined) {
+      localStorage.removeItem(key);
+    } else {
+      localStorage.setItem(key, JSON.stringify(value));
+    }
+  } catch {
+    // ignore storage quota errors
+  }
+}
+
+function readInitialCatalogSnapshot(): PersistedCatalogSnapshot | null {
+  const baseUrl = getApiBaseUrl();
+  if (!baseUrl) return null;
+  const cached = readJsonStorage<PersistedCatalogSnapshot | null>(LS_CATALOG_CACHE, null);
+  if (!cached || cached.baseUrl !== baseUrl) return null;
+  return {
+    ...cached,
+    items: (cached.items || []).filter((i) => !isLegacySeedItem(i)),
+    categories: cached.categories || [],
+    seriesList: cached.seriesList || [],
+    notifications: cached.notifications || [],
+  };
+}
+
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [section, setSection] = useState<AppSection>('home');
+  const initialSnapshotRef = useRef<PersistedCatalogSnapshot | null>(readInitialCatalogSnapshot());
+
+  const [section, setSectionState] = useState<AppSection>(() => {
+    try {
+      const saved = localStorage.getItem(LS_LAST_SECTION) as AppSection | null;
+      if (saved && VALID_SECTIONS.has(saved)) return saved;
+    } catch {
+      // ignore storage errors
+    }
+    return 'home';
+  });
+
+  const setSection = useCallback((s: AppSection) => {
+    setSectionState(s);
+    try {
+      localStorage.setItem(LS_LAST_SECTION, s);
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
+
   const [language, setLanguageState] = useState<AppLanguage>(() => {
     const saved = localStorage.getItem(LS_LANG);
     return saved === 'ar' || saved === 'lg' ? saved : 'en';
@@ -140,19 +221,40 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return localStorage.getItem(LS_WIFI) === 'true';
   });
   const [apiBaseUrl, setApiBaseUrlState] = useState<string>(() => getApiBaseUrl());
-  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(
+    () => initialSnapshotRef.current?.syncedAt || null
+  );
   const [catalogVersion, setCatalogVersion] = useState<number>(0);
   const lastSyncMsRef = useRef<number>(0);
   const syncInflightRef = useRef<Promise<void> | null>(null);
   const wasOnlineRef = useRef<boolean>(isOnline);
 
   const [user, setUser] = useState<UserProfile | null>(null);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [seriesList, setSeriesList] = useState<SeriesItem[]>([]);
-  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
-  const [catalogItems, setCatalogItems] = useState<ContentItem[]>([]);
-  const [catalogLoading, setCatalogLoading] = useState<boolean>(true);
+  const [categories, setCategories] = useState<Category[]>(
+    () => initialSnapshotRef.current?.categories || []
+  );
+  const [seriesList, setSeriesList] = useState<SeriesItem[]>(
+    () => initialSnapshotRef.current?.seriesList || []
+  );
+  const [notifications, setNotifications] = useState<NotificationItem[]>(
+    () => initialSnapshotRef.current?.notifications || []
+  );
+  const [catalogItems, setCatalogItems] = useState<ContentItem[]>(
+    () => initialSnapshotRef.current?.items || []
+  );
+  const [catalogLoading, setCatalogLoading] = useState<boolean>(
+    () => (initialSnapshotRef.current?.items.length || 0) === 0
+  );
   const [catalogError, setCatalogError] = useState<string | null>(null);
+
+  const categoriesRef = useRef(categories);
+  categoriesRef.current = categories;
+  const seriesListRef = useRef(seriesList);
+  seriesListRef.current = seriesList;
+  const notificationsRef = useRef(notifications);
+  notificationsRef.current = notifications;
+  const catalogItemsRef = useRef(catalogItems);
+  catalogItemsRef.current = catalogItems;
 
   const [favoriteItems, setFavoriteItems] = useState<ContentItem[]>(() => {
     const loaded = readJsonStorage<ContentItem[]>(LS_FAVORITES, []);
@@ -177,8 +279,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [downloadStates, setDownloadStates] = useState<Record<string, DownloadProgressState>>({});
   const abortControllersRef = useRef<Record<string, AbortController>>({});
 
-  const [selectedContent, setSelectedContent] = useState<ContentItem | null>(null);
-  const [readerTarget, setReaderTarget] = useState<{ item: ContentItem; mode: 'transcript' | 'pdf' } | null>(null);
+  const [selectedContent, setSelectedContent] = useState<ContentItem | null>(() => {
+    const saved = readJsonStorage<ContentItem | null>(LS_SELECTED_CONTENT, null);
+    return saved && !isLegacySeedItem(saved) ? saved : null;
+  });
+  const [readerTarget, setReaderTarget] = useState<{ item: ContentItem; mode: 'transcript' | 'pdf' } | null>(() => {
+    const saved = readJsonStorage<{ item: ContentItem; mode: 'transcript' | 'pdf' } | null>(LS_READER_TARGET, null);
+    return saved?.item && !isLegacySeedItem(saved.item) ? saved : null;
+  });
   const [toast, setToast] = useState<string | null>(null);
   const toastTimerRef = useRef<number | null>(null);
 
@@ -245,120 +353,153 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     reloadOfflineRecords();
   }, [reloadOfflineRecords]);
 
-  // Reconcile cached client state with live server catalog so deleted items never persist
-  const refreshCatalogMeta = useCallback(async () => {
-    if (!getApiBaseUrl()) {
-      setCatalogLoading(false);
-      return;
-    }
-    if (syncInflightRef.current) {
-      return syncInflightRef.current;
-    }
-
-    const runSync = async () => {
-      setCatalogLoading((prev) => prev || catalogItems.length === 0);
-      setCatalogError(null);
-      try {
-        const [catalogRes, catRes, serRes, notifRes] = await Promise.allSettled([
-          apiRequest<{ items: ContentItem[] }>('/api/content?limit=500'),
-          apiRequest<{ categories: Category[] }>('/api/categories'),
-          apiRequest<{ series: SeriesItem[] }>('/api/series'),
-          apiRequest<{ notifications: NotificationItem[] }>('/api/notifications'),
-        ]);
-
-        if (catRes.status === 'fulfilled') {
-          setCategories(catRes.value.categories || []);
-        }
-        if (serRes.status === 'fulfilled') {
-          setSeriesList(serRes.value.series || []);
-        }
-        if (notifRes.status === 'fulfilled') {
-          setNotifications(notifRes.value.notifications || []);
-        }
-
-        if (catalogRes.status === 'fulfilled') {
-          const items = catalogRes.value.items || [];
-          lastSyncMsRef.current = Date.now();
-          setCatalogItems(items);
-          setLastSyncedAt(new Date().toISOString());
-          setCatalogVersion((v) => v + 1);
-          setCatalogError(null);
-
-          const publishedMap = new Map<string, ContentItem>(items.map((item) => [item.id, item]));
-
-          setSelectedContent((prev) => (prev ? publishedMap.get(prev.id) || null : null));
-
-          setFavoriteItems((prev) => {
-            const next = prev
-              .filter((item) => publishedMap.has(item.id))
-              .map((item) => publishedMap.get(item.id)!);
-            localStorage.setItem(LS_FAVORITES, JSON.stringify(next));
-            return next;
-          });
-
-          setListeningHistory((prev) => {
-            const next = prev
-              .filter((entry) => publishedMap.has(entry.contentId))
-              .map((entry) => ({ ...entry, item: publishedMap.get(entry.contentId)! }));
-            localStorage.setItem(LS_LISTEN_HIST, JSON.stringify(next));
-            return next;
-          });
-
-          setReadingHistory((prev) => {
-            const next = prev
-              .filter((entry) => publishedMap.has(entry.contentId))
-              .map((entry) => ({ ...entry, item: publishedMap.get(entry.contentId)! }));
-            localStorage.setItem(LS_READ_HIST, JSON.stringify(next));
-            return next;
-          });
-
-          const currentOffline = await getAllOfflineRecords();
-          let offlineChanged = false;
-          for (const rec of currentOffline) {
-            if (!publishedMap.has(rec.contentId)) {
-              await deleteOfflineRecord(rec.contentId, rec.kind, rec.url).catch(() => {});
-              offlineChanged = true;
-            }
-          }
-          if (offlineChanged) {
-            await reloadOfflineRecords();
-          }
-        } else {
-          const reason = catalogRes.reason;
-          setCatalogError(reason instanceof Error ? reason.message : 'Unable to reach content server.');
-        }
-      } finally {
+  // Stale-while-revalidate live sync with content server
+  const refreshCatalogMeta = useCallback(
+    async (forceRefresh = false) => {
+      const activeBase = getApiBaseUrl();
+      if (!activeBase) {
         setCatalogLoading(false);
-        syncInflightRef.current = null;
+        return;
       }
-    };
+      if (forceRefresh) {
+        clearApiCache();
+      } else if (syncInflightRef.current) {
+        return syncInflightRef.current;
+      }
 
-    const promise = runSync();
-    syncInflightRef.current = promise;
-    return promise;
-  }, [reloadOfflineRecords, catalogItems.length]);
+      const runSync = async () => {
+        if (catalogItemsRef.current.length === 0) {
+          setCatalogLoading(true);
+        }
+        setCatalogError(null);
+
+        try {
+          const reqOpts = { forceRefresh };
+          const [catalogRes, catRes, serRes, notifRes] = await Promise.allSettled([
+            apiRequest<{ items: ContentItem[] }>('/api/content?limit=500', reqOpts),
+            apiRequest<{ categories: Category[] }>('/api/categories', reqOpts),
+            apiRequest<{ series: SeriesItem[] }>('/api/series', reqOpts),
+            apiRequest<{ notifications: NotificationItem[] }>('/api/notifications', reqOpts),
+          ]);
+
+          const nextCategories =
+            catRes.status === 'fulfilled' ? catRes.value.categories || [] : categoriesRef.current;
+          const nextSeries =
+            serRes.status === 'fulfilled' ? serRes.value.series || [] : seriesListRef.current;
+          const nextNotifs =
+            notifRes.status === 'fulfilled' ? notifRes.value.notifications || [] : notificationsRef.current;
+
+          if (catRes.status === 'fulfilled') setCategories(nextCategories);
+          if (serRes.status === 'fulfilled') setSeriesList(nextSeries);
+          if (notifRes.status === 'fulfilled') setNotifications(nextNotifs);
+
+          if (catalogRes.status === 'fulfilled') {
+            const items = (catalogRes.value.items || []).filter((i) => !isLegacySeedItem(i));
+            const syncedAt = new Date().toISOString();
+            lastSyncMsRef.current = Date.now();
+            setCatalogItems(items);
+            setLastSyncedAt(syncedAt);
+            setCatalogVersion((v) => v + 1);
+            setCatalogError(null);
+
+            writeJsonStorage(LS_CATALOG_CACHE, {
+              baseUrl: activeBase,
+              items,
+              categories: nextCategories,
+              seriesList: nextSeries,
+              notifications: nextNotifs,
+              syncedAt,
+            } satisfies PersistedCatalogSnapshot);
+
+            const publishedMap = new Map<string, ContentItem>(items.map((item) => [item.id, item]));
+
+            setSelectedContent((prev) => {
+              const next = prev ? publishedMap.get(prev.id) || null : null;
+              writeJsonStorage(LS_SELECTED_CONTENT, next);
+              return next;
+            });
+
+            setReaderTarget((prev) => {
+              if (!prev) return null;
+              const freshItem = publishedMap.get(prev.item.id);
+              const next = freshItem ? { ...prev, item: freshItem } : null;
+              writeJsonStorage(LS_READER_TARGET, next);
+              return next;
+            });
+
+            setFavoriteItems((prev) => {
+              const next = prev
+                .filter((item) => publishedMap.has(item.id))
+                .map((item) => publishedMap.get(item.id)!);
+              localStorage.setItem(LS_FAVORITES, JSON.stringify(next));
+              return next;
+            });
+
+            setListeningHistory((prev) => {
+              const next = prev
+                .filter((entry) => publishedMap.has(entry.contentId))
+                .map((entry) => ({ ...entry, item: publishedMap.get(entry.contentId)! }));
+              localStorage.setItem(LS_LISTEN_HIST, JSON.stringify(next));
+              return next;
+            });
+
+            setReadingHistory((prev) => {
+              const next = prev
+                .filter((entry) => publishedMap.has(entry.contentId))
+                .map((entry) => ({ ...entry, item: publishedMap.get(entry.contentId)! }));
+              localStorage.setItem(LS_READ_HIST, JSON.stringify(next));
+              return next;
+            });
+
+            const currentOffline = await getAllOfflineRecords();
+            let offlineChanged = false;
+            for (const rec of currentOffline) {
+              if (!publishedMap.has(rec.contentId)) {
+                await deleteOfflineRecord(rec.contentId, rec.kind, rec.url).catch(() => {});
+                offlineChanged = true;
+              }
+            }
+            if (offlineChanged) {
+              await reloadOfflineRecords();
+            }
+          } else {
+            const reason = catalogRes.reason;
+            setCatalogError(reason instanceof Error ? reason.message : 'Unable to reach content server.');
+          }
+        } finally {
+          setCatalogLoading(false);
+          syncInflightRef.current = null;
+        }
+      };
+
+      const promise = runSync();
+      syncInflightRef.current = promise;
+      return promise;
+    },
+    [reloadOfflineRecords]
+  );
 
   useEffect(() => {
-    refreshCatalogMeta();
+    refreshCatalogMeta(false);
   }, [refreshCatalogMeta]);
 
   // Re-fetch fresh data when network recovers from offline -> online
   useEffect(() => {
     if (isOnline && !wasOnlineRef.current) {
-      refreshCatalogMeta();
+      refreshCatalogMeta(true);
     }
     wasOnlineRef.current = isOnline;
   }, [isOnline, refreshCatalogMeta]);
 
   useEffect(() => {
     const syncIfStale = () => {
-      if (document.visibilityState === 'visible' && navigator.onLine && Date.now() - lastSyncMsRef.current > 12000) {
-        refreshCatalogMeta();
+      if (document.visibilityState === 'visible' && navigator.onLine && Date.now() - lastSyncMsRef.current > 15000) {
+        refreshCatalogMeta(false);
       }
     };
     const onFocus = () => {
-      if (navigator.onLine && Date.now() - lastSyncMsRef.current > 12000) {
-        refreshCatalogMeta();
+      if (navigator.onLine && Date.now() - lastSyncMsRef.current > 15000) {
+        refreshCatalogMeta(false);
       }
     };
     document.addEventListener('visibilitychange', syncIfStale);
@@ -370,16 +511,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [refreshCatalogMeta]);
 
   useEffect(() => {
-    if (isOnline && Date.now() - lastSyncMsRef.current > 15000) {
-      refreshCatalogMeta();
+    if (isOnline && Date.now() - lastSyncMsRef.current > 20000) {
+      refreshCatalogMeta(false);
     }
   }, [section, isOnline, refreshCatalogMeta]);
 
   const updateApiBaseUrl = useCallback(
     async (url: string) => {
+      writeJsonStorage(LS_CATALOG_CACHE, null);
       setStoredApiBaseUrl(url);
       setApiBaseUrlState(getApiBaseUrl());
-      await refreshCatalogMeta();
+      setCatalogItems([]);
+      await refreshCatalogMeta(true);
     },
     [refreshCatalogMeta]
   );
@@ -701,10 +844,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const openContentDetails = useCallback((item: ContentItem) => {
     setSelectedContent(item);
+    writeJsonStorage(LS_SELECTED_CONTENT, item);
   }, []);
 
   const closeContentDetails = useCallback(() => {
     setSelectedContent(null);
+    writeJsonStorage(LS_SELECTED_CONTENT, null);
   }, []);
 
   const openReader = useCallback((item: ContentItem, preferredMode?: 'transcript' | 'pdf') => {
@@ -715,11 +860,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     else if (preferredMode === 'transcript' && hasTranscript) mode = 'transcript';
     else if (hasTranscript) mode = 'transcript';
     else if (hasPdf) mode = 'pdf';
-    setReaderTarget({ item, mode });
+    const next = { item, mode };
+    setReaderTarget(next);
+    writeJsonStorage(LS_READER_TARGET, next);
   }, []);
 
   const closeReader = useCallback(() => {
     setReaderTarget(null);
+    writeJsonStorage(LS_READER_TARGET, null);
   }, []);
 
   return (

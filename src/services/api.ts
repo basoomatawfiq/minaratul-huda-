@@ -6,7 +6,13 @@ export const DEFAULT_API_BASE_URL = 'https://studio.ugandakickboxingfederation.o
 export const APP_LOGO_PATH = '/assets/aistudio/WhatsApp_Image_2026-11-25_at_03.55.32_835749e8.jpeg';
 
 const REQUEST_TIMEOUT_MS = 25000;
+const GET_CACHE_TTL_MS = 20000;
 const inflightGets = new Map<string, Promise<unknown>>();
+const responseCache = new Map<string, { data: unknown; ts: number }>();
+
+export function clearApiCache() {
+  responseCache.clear();
+}
 
 export function setAuthToken(token: string | null) {
   authTokenInMemory = token;
@@ -63,6 +69,7 @@ export function getStoredApiBaseUrl(): string {
 
 export function setStoredApiBaseUrl(url: string) {
   const normalized = normalizeUrl(url);
+  clearApiCache();
   try {
     if (normalized && normalized !== DEFAULT_API_BASE_URL && !isStaleOrSelfUrl(normalized)) {
       localStorage.setItem(LS_API_BASE_URL, normalized);
@@ -212,19 +219,20 @@ async function executeApiRequest<T>(
 
 export async function apiRequest<T = any>(
   path: string,
-  options: RequestInit = {}
+  options: RequestInit & { forceRefresh?: boolean } = {}
 ): Promise<T> {
   const base = getApiBaseUrl();
   if (!base && !/^https?:\/\//i.test(path)) {
     throw new Error('Content Server URL is not configured. Open Settings to connect your server.');
   }
 
-  const method = (options.method || 'GET').toUpperCase();
-  const headers = new Headers(options.headers || {});
+  const { forceRefresh, ...fetchOptions } = options;
+  const method = (fetchOptions.method || 'GET').toUpperCase();
+  const headers = new Headers(fetchOptions.headers || {});
   if (
     !headers.has('Content-Type') &&
-    options.body !== undefined &&
-    !(options.body instanceof FormData)
+    fetchOptions.body !== undefined &&
+    !(fetchOptions.body instanceof FormData)
   ) {
     headers.set('Content-Type', 'application/json');
   }
@@ -234,17 +242,33 @@ export async function apiRequest<T = any>(
 
   const targetUrl = resolveApiUrl(path);
 
-  if (method === 'GET' && !authTokenInMemory && !options.signal) {
+  if (method === 'GET' && !authTokenInMemory && !fetchOptions.signal) {
+    if (!forceRefresh) {
+      const cached = responseCache.get(targetUrl);
+      if (cached && Date.now() - cached.ts < GET_CACHE_TTL_MS) {
+        return cached.data as T;
+      }
+    }
+
     const existing = inflightGets.get(targetUrl);
     if (existing) {
       return existing as Promise<T>;
     }
-    const promise = executeApiRequest<T>(targetUrl, method, headers, options).finally(() => {
-      inflightGets.delete(targetUrl);
-    });
+    const promise = executeApiRequest<T>(targetUrl, method, headers, fetchOptions)
+      .then((result) => {
+        responseCache.set(targetUrl, { data: result, ts: Date.now() });
+        return result;
+      })
+      .finally(() => {
+        inflightGets.delete(targetUrl);
+      });
     inflightGets.set(targetUrl, promise);
     return promise;
   }
 
-  return executeApiRequest<T>(targetUrl, method, headers, options);
+  if (method !== 'GET') {
+    clearApiCache();
+  }
+
+  return executeApiRequest<T>(targetUrl, method, headers, fetchOptions);
 }
